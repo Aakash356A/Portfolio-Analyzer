@@ -9,3 +9,7 @@ env/
 *.log
 git_commands.txt
 *.env
+
+# Private portfolio data
+data/portfolio.json
+data/summaries/
