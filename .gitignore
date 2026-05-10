@@ -8,3 +8,4 @@ env/
 .streamlit/
 *.log
 git_commands.txt
+*.env

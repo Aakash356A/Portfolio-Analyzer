@@ -30,6 +30,7 @@ from src.llm import (
 from src.portfolio import add_holding, load_portfolio, remove_holding
 from src.sec_edgar import get_filing_text, get_recent_filings
 from src.summary_pipeline import list_saved_summaries, run_summary_pipeline
+from src.news_monitor import fetch_all, score_color, score_bg
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Page config
@@ -47,7 +48,7 @@ else:
 
 page = st.sidebar.radio(
     "Navigate",
-    ["Dashboard", "Manage Holdings", "Stock Analysis", "Performance", "📋 Summary"],
+    ["Dashboard", "Manage Holdings", "Stock Analysis", "Performance", "📋 Summary", "🔔 Monitor"],
 )
 
 portfolio = load_portfolio()
@@ -627,8 +628,208 @@ elif page == "📋 Summary":
                     file_name=chosen["name"]+".md", mime="text/markdown")
 
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# Sidebar footer
+# Monitor  — real-time news alerts
+# ─────────────────────────────────────────────────────────────────────────────
+elif page == "🔔 Monitor":
+    try:
+        from streamlit_autorefresh import st_autorefresh
+        HAS_AUTOREFRESH = True
+    except ImportError:
+        HAS_AUTOREFRESH = False
+
+    st.header("🔔 News Monitor")
+    st.caption(
+        "Polls SEC EDGAR 8-K filings, Business Wire, PR Newswire, Yahoo Finance, "
+        "and Google News. Typically faster than major news outlets."
+    )
+
+    # ── Session state ─────────────────────────────────────────────────────
+    if "monitor_seen"      not in st.session_state: st.session_state.monitor_seen      = set()
+    if "monitor_alerts"    not in st.session_state: st.session_state.monitor_alerts    = []
+    if "monitor_watchlist" not in st.session_state:
+        st.session_state.monitor_watchlist = [h["ticker"] for h in holdings]
+
+    # ── Controls ──────────────────────────────────────────────────────────
+    col_wl, col_ctrl = st.columns([3, 2])
+    with col_wl:
+        st.subheader("Watchlist")
+        add_col, btn_col = st.columns([3, 1])
+        new_tick = add_col.text_input("Add ticker", placeholder="NVDA",
+                                       label_visibility="collapsed")
+        if btn_col.button("Add", key="wl_add"):
+            t = new_tick.strip().upper()
+            if t and t not in st.session_state.monitor_watchlist:
+                st.session_state.monitor_watchlist.append(t)
+                st.rerun()
+        if st.session_state.monitor_watchlist:
+            tick_cols = st.columns(min(len(st.session_state.monitor_watchlist), 6))
+            for i, t in enumerate(st.session_state.monitor_watchlist):
+                with tick_cols[i % 6]:
+                    if st.button(f"{t} ✕", key=f"rem_{t}"):
+                        st.session_state.monitor_watchlist.remove(t); st.rerun()
+
+    with col_ctrl:
+        st.subheader("Settings")
+        min_score = st.slider("Min. significance to alert", 1, 10, 6,
+            help="6=deals/earnings/legal, 9=critical only (M&A, FDA, bankruptcy)")
+        if HAS_AUTOREFRESH:
+            interval_sec = st.select_slider("Auto-refresh", [60,90,120,180,300],
+                value=90, format_func=lambda x: f"every {x}s")
+            if not st.checkbox("Pause auto-refresh"):
+                st_autorefresh(interval=interval_sec*1000, key="monitor_ar")
+        else:
+            st.caption("Tip: `pip install streamlit-autorefresh` for auto-refresh")
+            if st.button("🔄 Refresh now"):
+                st.cache_data.clear(); st.rerun()
+
+    st.divider()
+
+    if not st.session_state.monitor_watchlist:
+        st.info("Add tickers above to start monitoring.")
+        st.stop()
+
+    # ── Fetch & detect new ────────────────────────────────────────────────
+    from src.data_fetcher import get_stock_info as _gsi
+    all_new, ticker_data = [], {}
+    for tick in st.session_state.monitor_watchlist:
+        info    = _gsi(tick)
+        company = info.get("longName", tick)
+        arts    = fetch_all(tick, company)
+        ticker_data[tick] = {"articles": arts, "company": company}
+        for a in arts:
+            if a["id"] not in st.session_state.monitor_seen:
+                st.session_state.monitor_seen.add(a["id"])
+                if a["score"] >= min_score:
+                    a["ticker"] = tick; a["company"] = company
+                    all_new.append(a)
+
+    if all_new:
+        st.session_state.monitor_alerts = (all_new + st.session_state.monitor_alerts)[:50]
+
+    # ── Alert banners ─────────────────────────────────────────────────────
+    critical = [a for a in st.session_state.monitor_alerts if a["score"] >= 9]
+    high     = [a for a in st.session_state.monitor_alerts if 7 <= a["score"] < 9]
+    if critical:
+        st.error("🚨 **CRITICAL** — " + "  |  ".join(
+            f"**{a['ticker']}**: {a['title'][:80]}" for a in critical[:3]))
+    if high:
+        st.warning("⚠️ **High-Impact** — " + "  |  ".join(
+            f"**{a['ticker']}**: {a['title'][:70]}" for a in high[:3]))
+
+    # Browser push notification for new critical items
+    new_critical = [a for a in all_new if a["score"] >= 9]
+    if new_critical:
+        nc = new_critical[0]
+        st.components.v1.html(f"""<script>
+        function notify() {{
+            if (Notification.permission==="granted") {{
+                new Notification("🚨 {nc['ticker']}: {nc['title'][:55].replace('"',"'")}",
+                    {{body:"{nc['label']} | {nc['source']}"}});
+            }} else if (Notification.permission!=="denied") {{
+                Notification.requestPermission().then(p=>{{if(p==="granted")notify();}});
+            }}
+        }}
+        notify();
+        </script>""", height=0)
+
+    st.caption(
+        f"Last checked: **{datetime.now().strftime('%H:%M:%S')}**  ·  "
+        f"{len(st.session_state.monitor_watchlist)} ticker(s)  ·  "
+        f"{len(st.session_state.monitor_seen)} articles seen this session"
+    )
+
+    # ── Per-ticker feeds ──────────────────────────────────────────────────
+    show_all = st.checkbox("Show all articles (not just high-significance)", value=False)
+
+    for tick, td in ticker_data.items():
+        arts    = td["articles"]
+        company = td["company"]
+        top_s   = max((a["score"] for a in arts), default=0)
+        badge   = " 🚨" if top_s>=9 else (" ⚠️" if top_s>=7 else "")
+        visible = arts if show_all else [a for a in arts if a["score"]>=min_score]
+
+        with st.expander(
+            f"**{tick}** — {company}{badge}  ({len(arts)} articles, {len(visible)} above threshold)",
+            expanded=(top_s >= min_score),
+        ):
+            if not arts:
+                st.info("No articles found. Feeds update every 90 s.")
+                continue
+            display = visible or arts[:3]
+
+            for a in display[:15]:
+                is_new  = a["id"] in {x["id"] for x in all_new}
+                bc      = score_color(a["score"])
+                bg      = score_bg(a["score"])
+                new_tag = ('<span style="background:#2ecc71;color:#fff;padding:1px 6px;'
+                           'border-radius:3px;font-size:11px;font-weight:bold;margin-right:5px;">NEW</span>'
+                           if is_new else "")
+                title_a = (f'<a href="{a["link"]}" target="_blank" '
+                           f'style="color:inherit;text-decoration:none;">{a["title"]}</a>'
+                           if a.get("link") else a["title"])
+                st.markdown(
+                    f"""<div style="border-left:3px solid {bc};background:{bg};
+                                   padding:8px 12px;margin:4px 0;border-radius:0 4px 4px 0;">
+                        {new_tag}
+                        <span style="background:{bc};color:#fff;padding:1px 8px;
+                              border-radius:4px;font-size:11px;font-weight:bold;">
+                            {a['score']}/10 {a['label']}
+                        </span>
+                        <span style="margin-left:8px;font-size:11px;color:#888;">
+                            {a['speed']} {a['source']}
+                        </span>
+                        <br><span style="font-size:14px;font-weight:600;line-height:1.5;">
+                            {title_a}
+                        </span>
+                        {'<br><span style="font-size:12px;color:#aaa;">' + a["summary"][:180] + '</span>' if a.get("summary") else ""}
+                        <br><span style="font-size:11px;color:#777;">{a.get("published","")[:22]}</span>
+                    </div>""",
+                    unsafe_allow_html=True,
+                )
+
+    # ── Alert history ─────────────────────────────────────────────────────
+    if st.session_state.monitor_alerts:
+        st.divider()
+        with st.expander(f"📜 Alert History ({len(st.session_state.monitor_alerts)} this session)"):
+            for a in st.session_state.monitor_alerts[:20]:
+                st.markdown(
+                    f"`{a.get('ticker','')}` **{a['score']}/10** {a['label']} — "
+                    f"[{a['title'][:85]}]({a['link']})  "
+                    f"<span style='color:#888;font-size:11px;'>{a.get('source','')} · "
+                    f"{a.get('published','')[:16]}</span>",
+                    unsafe_allow_html=True,
+                )
+            if st.button("Clear history", key="clr"):
+                st.session_state.monitor_alerts = []; st.rerun()
+
+    # ── Legend ────────────────────────────────────────────────────────────
+    with st.expander("ℹ️ Source Speed Guide & Scoring"):
+        st.markdown("""
+**Source speed tiers:**
+
+| Speed | Source | Typical lag | Notes |
+|-------|--------|-------------|-------|
+| ⚡⚡⚡⚡ | SEC EDGAR 8-K | Instant | Companies file *before* press release |
+| ⚡⚡⚡ | Business Wire | 0-2 min | Primary press release wire |
+| ⚡⚡⚡ | PR Newswire | 0-2 min | Second major wire |
+| ⚡⚡ | Yahoo Finance | 2-5 min | Syndicates wires quickly |
+| ⚡ | Google News | 5-15 min | Broad aggregation |
+
+**Significance scores:**
+🔴 **9-10** — M&A, FDA approvals, bankruptcy, criminal charges  
+🟠 **7-8** — Earnings, major contracts, CEO changes, lawsuits  
+🟡 **5-6** — Analyst ratings, dividends, product launches  
+⚪ **1-4** — General news, market commentary  
+
+**Pro tip:** SEC 8-K item codes tell you *exactly* what happened before you read the filing:
+`2.02` = Earnings · `2.01` = M&A · `5.02` = Leadership change · `1.05` = Cybersecurity
+        """)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SIDEBAR FOOTER ANCHOR
 # ─────────────────────────────────────────────────────────────────────────────
 st.sidebar.markdown("---")
 st.sidebar.caption(
