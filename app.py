@@ -27,7 +27,7 @@ from src.llm import (
     analyze_fundamentals, analyze_geopolitical,
     is_configured, summarize_sec_filing,
 )
-from src.portfolio import add_holding, load_portfolio, remove_holding
+from src.portfolio import add_holding, load_portfolio, remove_holding, sell_holding
 from src.sec_edgar import get_filing_text, get_recent_filings
 from src.summary_pipeline import list_saved_summaries, run_summary_pipeline
 from src.news_monitor import fetch_all, score_color, score_bg
@@ -125,37 +125,77 @@ if page == "Dashboard":
 # ─────────────────────────────────────────────────────────────────────────────
 elif page == "Manage Holdings":
     st.header("Manage Holdings")
-    st.subheader("Add a Holding")
-    with st.form("add_holding", clear_on_submit=True):
-        c1, c2 = st.columns(2)
-        with c1:
-            ticker = st.text_input("Ticker", placeholder="AAPL")
-            shares = st.number_input("Shares", min_value=0., step=0.01, format="%.4f")
-        with c2:
-            pp   = st.number_input("Purchase Price ($)", min_value=0., step=0.01, format="%.2f")
-            pdate = st.date_input("Purchase Date", value=datetime.today())
-        if st.form_submit_button("Add"):
-            if not ticker or shares<=0 or pp<=0:
-                st.error("Fill in all fields.")
-            else:
-                price = get_current_price(ticker)
-                if price is None:
-                    st.error(f"Couldn't verify '{ticker.upper()}'. Check the symbol.")
-                else:
-                    add_holding(ticker, shares, pp, pdate.isoformat())
-                    st.success(f"Added {shares} shares of {ticker.upper()} (current: {fmt(price)})")
-                    st.rerun()
 
+    tab_buy, tab_sell = st.tabs(["🟢 Buy", "🔴 Sell"])
+
+    with tab_buy:
+        st.subheader("Buy Shares")
+        existing_tickers = [h["ticker"] for h in holdings]
+        with st.form("add_holding", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+            with c1:
+                ticker = st.text_input("Ticker", placeholder="AAPL")
+                shares = st.number_input("Shares", min_value=0., step=0.01, format="%.4f")
+            with c2:
+                pp    = st.number_input("Purchase Price ($)", min_value=0., step=0.01, format="%.2f")
+                pdate = st.date_input("Purchase Date", value=datetime.today())
+            if st.form_submit_button("Buy"):
+                if not ticker or shares <= 0 or pp <= 0:
+                    st.error("Fill in all fields.")
+                else:
+                    price = get_current_price(ticker)
+                    if price is None:
+                        st.error(f"Couldn't verify '{ticker.upper()}'. Check the symbol.")
+                    else:
+                        is_existing = ticker.upper().strip() in existing_tickers
+                        add_holding(ticker, shares, pp, pdate.isoformat())
+                        if is_existing:
+                            updated = next(h for h in load_portfolio()["holdings"]
+                                           if h["ticker"] == ticker.upper().strip())
+                            st.success(
+                                f"Added {shares} shares of {ticker.upper()}. "
+                                f"New position: {updated['shares']} shares @ avg {fmt(updated['purchase_price'])}"
+                            )
+                        else:
+                            st.success(f"Opened new position: {shares} shares of {ticker.upper()} (current: {fmt(price)})")
+                        st.rerun()
+
+    with tab_sell:
+        st.subheader("Sell Shares")
+        if not holdings:
+            st.info("No holdings to sell.")
+        else:
+            with st.form("sell_holding", clear_on_submit=True):
+                sell_ticker = st.selectbox("Ticker", [h["ticker"] for h in holdings])
+                held = next((h for h in holdings if h["ticker"] == sell_ticker), None)
+                if held:
+                    st.caption(f"Currently holding **{held['shares']} shares** @ avg cost {fmt(held['purchase_price'])}")
+                sell_shares = st.number_input("Shares to sell", min_value=0., step=0.01, format="%.4f")
+                if st.form_submit_button("Sell"):
+                    if sell_shares <= 0:
+                        st.error("Enter number of shares to sell.")
+                    else:
+                        try:
+                            remaining = sell_holding(sell_ticker, sell_shares)
+                            if remaining == 0:
+                                st.success(f"Closed position in {sell_ticker} entirely.")
+                            else:
+                                st.success(f"Sold {sell_shares} shares of {sell_ticker}. Remaining: {remaining} shares.")
+                            st.rerun()
+                        except ValueError as e:
+                            st.error(str(e))
+
+    st.divider()
     st.subheader("Current Holdings")
     if not holdings:
         st.info("No holdings yet.")
     else:
         for i, h in enumerate(holdings):
-            c1,c2,c3,c4,c5 = st.columns([2,2,2,2,1])
+            c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 2, 1])
             c1.markdown(f"**{h['ticker']}**")
             c2.write(f"{h['shares']} shares")
-            c3.write(f"@ {fmt(h['purchase_price'])}")
-            c4.write(h.get("purchase_date",""))
+            c3.write(f"@ avg {fmt(h['purchase_price'])}")
+            c4.write(h.get("purchase_date", ""))
             if c5.button("Remove", key=f"del_{i}"):
                 remove_holding(i); st.rerun()
 
@@ -692,18 +732,25 @@ elif page == "🔔 Monitor":
 
     # ── Fetch & detect new ────────────────────────────────────────────────
     from src.data_fetcher import get_stock_info as _gsi
-    all_new, ticker_data = [], {}
-    for tick in st.session_state.monitor_watchlist:
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _fetch(tick):
         info    = _gsi(tick)
         company = info.get("longName", tick)
         arts    = fetch_all(tick, company)
-        ticker_data[tick] = {"articles": arts, "company": company}
-        for a in arts:
-            if a["id"] not in st.session_state.monitor_seen:
-                st.session_state.monitor_seen.add(a["id"])
-                if a["score"] >= min_score:
-                    a["ticker"] = tick; a["company"] = company
-                    all_new.append(a)
+        return tick, company, arts
+
+    all_new, ticker_data = [], {}
+    with st.spinner(f"Fetching news for {len(st.session_state.monitor_watchlist)} tickers…"):
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            for tick, company, arts in ex.map(_fetch, st.session_state.monitor_watchlist):
+                ticker_data[tick] = {"articles": arts, "company": company}
+                for a in arts:
+                    if a["id"] not in st.session_state.monitor_seen:
+                        st.session_state.monitor_seen.add(a["id"])
+                        if a["score"] >= min_score:
+                            a["ticker"] = tick; a["company"] = company
+                            all_new.append(a)
 
     if all_new:
         st.session_state.monitor_alerts = (all_new + st.session_state.monitor_alerts)[:50]
@@ -759,35 +806,34 @@ elif page == "🔔 Monitor":
                 continue
             display = visible or arts[:3]
 
+            new_ids    = {x["id"] for x in all_new}
+            cards_html = ""
             for a in display[:15]:
-                is_new  = a["id"] in {x["id"] for x in all_new}
-                bc      = score_color(a["score"])
-                bg      = score_bg(a["score"])
-                new_tag = ('<span style="background:#2ecc71;color:#fff;padding:1px 6px;'
-                           'border-radius:3px;font-size:11px;font-weight:bold;margin-right:5px;">NEW</span>'
-                           if is_new else "")
-                title_a = (f'<a href="{a["link"]}" target="_blank" '
-                           f'style="color:inherit;text-decoration:none;">{a["title"]}</a>'
-                           if a.get("link") else a["title"])
-                st.markdown(
-                    f"""<div style="border-left:3px solid {bc};background:{bg};
-                                   padding:8px 12px;margin:4px 0;border-radius:0 4px 4px 0;">
-                        {new_tag}
-                        <span style="background:{bc};color:#fff;padding:1px 8px;
-                              border-radius:4px;font-size:11px;font-weight:bold;">
-                            {a['score']}/10 {a['label']}
-                        </span>
-                        <span style="margin-left:8px;font-size:11px;color:#888;">
-                            {a['speed']} {a['source']}
-                        </span>
-                        <br><span style="font-size:14px;font-weight:600;line-height:1.5;">
-                            {title_a}
-                        </span>
-                        {'<br><span style="font-size:12px;color:#aaa;">' + a["summary"][:180] + '</span>' if a.get("summary") else ""}
-                        <br><span style="font-size:11px;color:#777;">{a.get("published","")[:22]}</span>
-                    </div>""",
-                    unsafe_allow_html=True,
+                is_new       = a["id"] in new_ids
+                bc           = score_color(a["score"])
+                bg           = score_bg(a["score"])
+                new_tag      = ('<span style="background:#2ecc71;color:#fff;padding:1px 6px;'
+                                'border-radius:3px;font-size:11px;font-weight:bold;margin-right:5px;">NEW</span>'
+                                if is_new else "")
+                title_html   = (f'<a href="{a["link"]}" target="_blank" '
+                                f'style="color:inherit;text-decoration:none;">{a["title"]}</a>'
+                                if a.get("link") else a["title"])
+                summary_html = (f'<br><span style="font-size:12px;color:#aaa;">{a["summary"][:180]}</span>'
+                                if a.get("summary") else "")
+                cards_html += (
+                    f'<div style="border-left:3px solid {bc};background:{bg};padding:8px 12px;margin:4px 0;border-radius:0 4px 4px 0;">'
+                    f'{new_tag}<span style="background:{bc};color:#fff;padding:1px 8px;border-radius:4px;font-size:11px;font-weight:bold;">{a["score"]}/10 {a["label"]}</span>'
+                    f'<span style="margin-left:8px;font-size:11px;color:#888;">{a["speed"]} {a["source"]}</span>'
+                    f'<br><span style="font-size:14px;font-weight:600;line-height:1.5;">{title_html}</span>'
+                    f'{summary_html}'
+                    f'<br><span style="font-size:11px;color:#777;">{a.get("published","")[:22]}</span>'
+                    f'</div>'
                 )
+            st.components.v1.html(
+                f'<div style="font-family:-apple-system,BlinkMacSystemFont,sans-serif;">{cards_html}</div>',
+                height=min(len(display[:15]) * 105, 1500),
+                scrolling=True,
+            )
 
     # ── Alert history ─────────────────────────────────────────────────────
     if st.session_state.monitor_alerts:
