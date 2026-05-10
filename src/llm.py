@@ -303,4 +303,4 @@ Every ticker in the portfolio must appear in the table.
 
 Tone: smart, direct, personal — like a note from a trusted analyst to yourself."""
 
-    return call_llm(prompt, max_tokens=1400)
+    return call_llm(prompt, max_tokens=5000)
