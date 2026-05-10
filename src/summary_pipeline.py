@@ -17,6 +17,7 @@ from .analytics import (
     sharpe_ratio,
 )
 from .data_fetcher import get_company_news_rss, get_historical_data, get_stock_info
+from .indicators import bollinger_bands as _bb, macd as _macd, rsi as _rsi, sma as _sma
 from .llm import generate_portfolio_summary
 from .sec_edgar import get_recent_filings
 
@@ -27,6 +28,46 @@ PERIOD_CONFIG = {
     "Weekly":  {"yf_period": "1mo", "days_back": 7,  "label": "weekly"},
     "Monthly": {"yf_period": "3mo", "days_back": 30, "label": "monthly"},
 }
+
+
+def _tech_signals(ticker: str) -> dict:
+    """Compute key technical indicator signals for the recommendation engine."""
+    hist = get_historical_data(ticker, "3mo")
+    out: dict = {}
+    if hist.empty or len(hist) < 20:
+        return out
+
+    closes  = hist["Close"]
+    current = float(closes.iloc[-1])
+
+    rsi_s = _rsi(closes)
+    if not rsi_s.dropna().empty:
+        out["rsi"] = round(float(rsi_s.iloc[-1]), 1)
+
+    ml, sl, hh = _macd(closes)
+    hh_clean = hh.dropna()
+    if not ml.dropna().empty:
+        out["macd_bullish"] = bool(float(ml.iloc[-1]) > float(sl.iloc[-1]))
+        if len(hh_clean) >= 2:
+            out["macd_crossing_up"] = bool(
+                float(hh_clean.iloc[-1]) > 0 and float(hh_clean.iloc[-2]) <= 0
+            )
+
+    upper, _, lower = _bb(closes)
+    if not upper.dropna().empty:
+        bw = float(upper.iloc[-1]) - float(lower.iloc[-1])
+        if bw > 0:
+            out["bb_pct"] = round((current - float(lower.iloc[-1])) / bw, 2)
+
+    sma20 = _sma(closes, 20)
+    if not sma20.dropna().empty:
+        out["above_sma20"] = bool(current > float(sma20.iloc[-1]))
+    if len(closes) >= 50:
+        sma50 = _sma(closes, 50)
+        if not sma50.dropna().empty:
+            out["above_sma50"] = bool(current > float(sma50.iloc[-1]))
+
+    return out
 
 
 def _portfolio_metrics(holdings: list, yf_period: str) -> dict:
@@ -62,30 +103,41 @@ def _stock_snapshot(holding: dict, yf_period: str, days_back: int) -> dict:
     company = info.get("longName", ticker)
 
     # Period price return
-    price_hist   = get_historical_data(ticker, yf_period)
+    price_hist    = get_historical_data(ticker, yf_period)
     period_return = "N/A"
     if not price_hist.empty and len(price_hist) >= 2:
         ret = (price_hist["Close"].iloc[-1] / price_hist["Close"].iloc[0] - 1) * 100
         period_return = f"{ret:+.2f}%"
 
-    # Latest SEC filing in the period
+    # Recent SEC filings
     filings = get_recent_filings(ticker, days_back=days_back,
                                   form_types=["8-K", "10-K", "10-Q"])
     latest_filing = "None"
+    filings_list  = []
     if filings:
         f = filings[0]
         latest_filing = f"{f['form']} ({f['date']}): {f['description']}"
+        filings_list  = [f"{f['form']} ({f['date']}): {f['description']}" for f in filings[:4]]
 
-    # Top news headline
-    news = get_company_news_rss(ticker, company, max_articles=5)
-    top_headline = news[0]["title"] if news else "No recent news"
+    # News headlines
+    news          = get_company_news_rss(ticker, company, max_articles=8)
+    top_headline  = news[0]["title"] if news else "No recent news"
+    news_headlines = [n["title"] for n in news[:8]]
+
+    # Technical signals
+    tech = _tech_signals(ticker)
 
     return {
-        "ticker":        ticker,
-        "company":       company,
-        "period_return": period_return,
-        "latest_filing": latest_filing,
-        "top_headline":  top_headline,
+        "ticker":         ticker,
+        "company":        company,
+        "period_return":  period_return,
+        "latest_filing":  latest_filing,
+        "filings_list":   filings_list,
+        "top_headline":   top_headline,
+        "news_headlines": news_headlines,
+        "tech":           tech,
+        "sector":         info.get("sector", "N/A"),
+        "country":        info.get("country", "US"),
     }
 
 

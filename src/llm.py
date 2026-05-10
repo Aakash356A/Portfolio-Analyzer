@@ -220,17 +220,45 @@ def generate_portfolio_summary(
     holdings_data: list,
     portfolio_metrics: dict,
 ) -> str:
-    """Portfolio-level investment memo for a given period."""
+    """Portfolio-level investment memo + trading recommendations for a given period."""
+
+    def _tech_str(tech: dict) -> str:
+        parts = []
+        rsi_val = tech.get("rsi")
+        if rsi_val is not None:
+            tag = " (overbought)" if rsi_val > 70 else " (oversold)" if rsi_val < 30 else " (neutral)"
+            parts.append(f"RSI {rsi_val}{tag}")
+        if "macd_bullish" in tech:
+            cross = " [fresh crossover]" if tech.get("macd_crossing_up") else ""
+            parts.append(f"MACD {'bullish' if tech['macd_bullish'] else 'bearish'}{cross}")
+        bb = tech.get("bb_pct")
+        if bb is not None:
+            pos = "near upper band" if bb >= 0.8 else "near lower band" if bb <= 0.2 else f"{bb:.0%} of band"
+            parts.append(f"BB {pos}")
+        trend = []
+        if tech.get("above_sma20") is not None:
+            trend.append("above SMA20" if tech["above_sma20"] else "below SMA20")
+        if tech.get("above_sma50") is not None:
+            trend.append("above SMA50" if tech["above_sma50"] else "below SMA50")
+        if trend:
+            parts.append("Trend: " + ", ".join(trend))
+        return " | ".join(parts) if parts else "N/A"
+
     holdings_block = ""
     for h in holdings_data:
+        news_str    = "\n".join(f"    - {n}" for n in h.get("news_headlines", [])[:6]) or "    None"
+        filings_str = "\n".join(f"    - {f}" for f in h.get("filings_list", [])) or "    None"
+        tech_str    = _tech_str(h.get("tech", {}))
         holdings_block += (
             f"\n{h['ticker']} ({h.get('company', h['ticker'])}):\n"
+            f"  Sector: {h.get('sector', 'N/A')} | Country: {h.get('country', 'N/A')}\n"
             f"  Period return: {h.get('period_return', 'N/A')}\n"
-            f"  Top headline: {h.get('top_headline', 'None')}\n"
-            f"  Latest filing: {h.get('latest_filing', 'None')}\n"
+            f"  Technical: {tech_str}\n"
+            f"  Recent News:\n{news_str}\n"
+            f"  Recent SEC Filings:\n{filings_str}\n"
         )
 
-    prompt = f"""Write a {period_label.lower()} portfolio review for a personal investor.
+    prompt = f"""Write a {period_label.lower()} portfolio review and trading recommendations for a personal investor.
 
 PORTFOLIO METRICS THIS PERIOD:
 - Return: {portfolio_metrics.get('period_return', 'N/A')}
@@ -242,7 +270,8 @@ PORTFOLIO METRICS THIS PERIOD:
 INDIVIDUAL POSITIONS:
 {holdings_block}
 
-Write a concise investment memo (≈300 words) with these sections:
+Write a structured investment memo (≈400 words) with these exact sections:
+
 ## Portfolio Performance
 (How the portfolio did vs the market, what drove it)
 
@@ -250,14 +279,28 @@ Write a concise investment memo (≈300 words) with these sections:
 (Specific positions — what worked and what didn't)
 
 ## Key Events This Period
-(Material news, filings, earnings — be specific)
+(Material news, SEC filings — be specific and reference tickers)
+
+## Macro & Geopolitical Watch
+(Interest rates, tariffs, sector headwinds, political risks relevant to these holdings)
 
 ## Risk Flags
-(Anything that needs watching — concentration, volatility, macro)
+(Overbought signals, concentration risk, earnings risk, anything needing attention)
+
+## Trading Recommendations
+Synthesize technical signals, news, filings, and macro context for each ticker.
+Use EXACTLY this markdown table:
+
+| Ticker | Company | Daily | Weekly | Monthly | Key Reasoning |
+|--------|---------|-------|--------|---------|---------------|
+| TICK | Name | Hold | Moderate Buy | Buy | one-line rationale |
+
+Valid ratings: Strong Buy / Buy / Moderate Buy / Hold / Moderate Sell / Sell / Strong Sell
+Every ticker in the portfolio must appear in the table.
 
 ## Watch List for Next Period
-(2-3 concrete things to monitor or research)
+(2-3 specific catalysts or events to monitor)
 
-Tone: smart but personal — like a note from a trusted analyst to yourself."""
+Tone: smart, direct, personal — like a note from a trusted analyst to yourself."""
 
-    return call_llm(prompt, max_tokens=750)
+    return call_llm(prompt, max_tokens=1400)
