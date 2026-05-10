@@ -6,3 +6,4 @@ plotly>=5.17.0
 feedparser>=6.0.0
 openai>=1.0.0
 python-dotenv>=1.0.0
+streamlit-autorefresh>=0.0.1
