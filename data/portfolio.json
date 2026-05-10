@@ -1,0 +1,22 @@
+{
+  "holdings": [
+    {
+      "ticker": "AAPL",
+      "shares": 10,
+      "purchase_price": 150.0,
+      "purchase_date": "2024-01-15"
+    },
+    {
+      "ticker": "MSFT",
+      "shares": 5,
+      "purchase_price": 380.0,
+      "purchase_date": "2024-02-20"
+    },
+    {
+      "ticker": "VOO",
+      "shares": 8,
+      "purchase_price": 450.0,
+      "purchase_date": "2024-03-10"
+    }
+  ]
+}
