@@ -1,23 +1,22 @@
 {
   "holdings": [
-    {"ticker": "VOO",   "shares": 2.961,   "purchase_price": 587.96, "purchase_date": "2025-03-04"},
-    {"ticker": "MGK",   "shares": 15.646,  "purchase_price": 74.92,  "purchase_date": "2025-03-06"},
-    {"ticker": "SCHG",  "shares": 25.344,  "purchase_price": 29.66,  "purchase_date": "2025-03-10"},
-    {"ticker": "VYM",   "shares": 5.272,   "purchase_price": 139.31, "purchase_date": "2025-03-11"},
-    {"ticker": "AAPL",  "shares": 4.455,   "purchase_price": 214.96, "purchase_date": "2025-04-02"},
-    {"ticker": "AMD",   "shares": 2.865,   "purchase_price": 195.43, "purchase_date": "2025-03-10"},
-    {"ticker": "COST",  "shares": 1.245,   "purchase_price": 927.46, "purchase_date": "2025-04-02"},
-    {"ticker": "AMZN",  "shares": 3.657,   "purchase_price": 212.48, "purchase_date": "2025-04-03"},
-    {"ticker": "LLY",   "shares": 1.33,    "purchase_price": 770.08, "purchase_date": "2025-04-04"},
-    {"ticker": "JPM",   "shares": 3.971,   "purchase_price": 297.68, "purchase_date": "2025-04-04"},
-    {"ticker": "GOOGL", "shares": 5.442,   "purchase_price": 252.11, "purchase_date": "2025-04-30"},
-    {"ticker": "HPQ",   "shares": 68.186,  "purchase_price": 22.82,  "purchase_date": "2025-05-29"},
-    {"ticker": "META",  "shares": 4.098,   "purchase_price": 646.37, "purchase_date": "2025-07-08"},
-    {"ticker": "TMUS",  "shares": 2.615,   "purchase_price": 206.34, "purchase_date": "2025-07-14"},
-    {"ticker": "SBET",  "shares": 166.338, "purchase_price": 14.47,  "purchase_date": "2025-08-13"},
-    {"ticker": "ACHR",  "shares": 107.543, "purchase_price": 7.44,   "purchase_date": "2025-11-19"},
-    {"ticker": "CMG",   "shares": 19.484,  "purchase_price": 33.36,  "purchase_date": "2025-11-19"},
-    {"ticker": "IBIT",  "shares": 12.86,   "purchase_price": 46.66,  "purchase_date": "2026-01-05"},
-    {"ticker": "OKLO",  "shares": 11.334,  "purchase_price": 72.35,  "purchase_date": "2026-01-26"}
+    {
+      "ticker": "AAPL",
+      "shares": 10,
+      "purchase_price": 150.0,
+      "purchase_date": "2024-01-15"
+    },
+    {
+      "ticker": "MSFT",
+      "shares": 5,
+      "purchase_price": 380.0,
+      "purchase_date": "2024-02-20"
+    },
+    {
+      "ticker": "VOO",
+      "shares": 8,
+      "purchase_price": 450.0,
+      "purchase_date": "2024-03-10"
+    }
   ]
 }
