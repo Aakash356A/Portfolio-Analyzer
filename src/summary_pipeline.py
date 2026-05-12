@@ -16,7 +16,7 @@ from .analytics import (
     portfolio_history,
     sharpe_ratio,
 )
-from .data_fetcher import get_company_news_rss, get_historical_data, get_stock_info
+from .data_fetcher import get_company_news_rss, get_earnings_info, get_historical_data, get_stock_info
 from .indicators import bollinger_bands as _bb, macd as _macd, rsi as _rsi, sma as _sma
 from .llm import generate_portfolio_summary
 from .sec_edgar import get_recent_filings
@@ -127,17 +127,47 @@ def _stock_snapshot(holding: dict, yf_period: str, days_back: int) -> dict:
     # Technical signals
     tech = _tech_signals(ticker)
 
+    # Upcoming earnings
+    earnings_date = "Unknown"
+    eps_estimate  = None
+    try:
+        ei  = get_earnings_info(ticker)
+        cal = ei.get("calendar")
+        if isinstance(cal, dict) and cal:
+            def _pick(keys):
+                for k in keys:
+                    if k in cal:
+                        v = cal[k]
+                        if hasattr(v, "__iter__") and not isinstance(v, str):
+                            v = list(v)
+                            return v[0] if v else None
+                        return v
+                return None
+            ed = _pick(["Earnings Date", "earningsDate"])
+            if ed:
+                earnings_date = str(ed)[:10]
+            ee = _pick(["EPS Estimate", "epsEstimate", "Earnings Average"])
+            if ee is not None:
+                try:
+                    eps_estimate = round(float(ee), 2)
+                except (ValueError, TypeError):
+                    pass
+    except Exception:
+        pass
+
     return {
-        "ticker":         ticker,
-        "company":        company,
-        "period_return":  period_return,
-        "latest_filing":  latest_filing,
-        "filings_list":   filings_list,
-        "top_headline":   top_headline,
-        "news_headlines": news_headlines,
-        "tech":           tech,
-        "sector":         info.get("sector", "N/A"),
-        "country":        info.get("country", "US"),
+        "ticker":          ticker,
+        "company":         company,
+        "period_return":   period_return,
+        "latest_filing":   latest_filing,
+        "filings_list":    filings_list,
+        "top_headline":    top_headline,
+        "news_headlines":  news_headlines,
+        "tech":            tech,
+        "sector":          info.get("sector", "N/A"),
+        "country":         info.get("country", "US"),
+        "earnings_date":   earnings_date,
+        "eps_estimate":    eps_estimate,
     }
 
 

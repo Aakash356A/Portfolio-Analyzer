@@ -249,10 +249,14 @@ def generate_portfolio_summary(
         news_str    = "\n".join(f"    - {n}" for n in h.get("news_headlines", [])[:6]) or "    None"
         filings_str = "\n".join(f"    - {f}" for f in h.get("filings_list", [])) or "    None"
         tech_str    = _tech_str(h.get("tech", {}))
+        ed          = h.get("earnings_date", "Unknown")
+        eps         = h.get("eps_estimate")
+        earn_str    = f"{ed}" + (f" (EPS est. ${eps})" if eps is not None else "")
         holdings_block += (
             f"\n{h['ticker']} ({h.get('company', h['ticker'])}):\n"
             f"  Sector: {h.get('sector', 'N/A')} | Country: {h.get('country', 'N/A')}\n"
             f"  Period return: {h.get('period_return', 'N/A')}\n"
+            f"  Next earnings: {earn_str}\n"
             f"  Technical: {tech_str}\n"
             f"  Recent News:\n{news_str}\n"
             f"  Recent SEC Filings:\n{filings_str}\n"
@@ -300,6 +304,23 @@ Every ticker in the portfolio must appear in the table.
 
 ## Watch List for Next Period
 (2-3 specific catalysts or events to monitor)
+
+## Upcoming Catalysts
+List every ticker that has a known earnings date coming up, any expected product launches,
+regulatory decisions, Fed meetings, or macro events relevant to this portfolio.
+Format as a bullet list grouped by timeframe:
+
+**This week:**
+- TICKER — event description
+
+**Next 2–4 weeks:**
+- TICKER — event description
+
+**Next 1–3 months:**
+- TICKER — event description
+
+If no known events for a timeframe, write "None confirmed."
+Flag any earnings with analyst EPS estimates as: "Earnings — est. $X.XX EPS"
 
 Tone: smart, direct, personal — like a note from a trusted analyst to yourself."""
 
