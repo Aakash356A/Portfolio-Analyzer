@@ -2,7 +2,9 @@
 import json
 from pathlib import Path
 
-PORTFOLIO_FILE = Path("data/portfolio.json")
+# Absolute path so this works regardless of the process cwd
+# (e.g. when launched by Claude Desktop MCP)
+PORTFOLIO_FILE = Path(__file__).parent.parent / "data" / "portfolio.json"
 
 
 def load_portfolio():

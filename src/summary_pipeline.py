@@ -21,7 +21,7 @@ from .indicators import bollinger_bands as _bb, macd as _macd, rsi as _rsi, sma 
 from .llm import generate_portfolio_summary
 from .sec_edgar import get_recent_filings
 
-SUMMARIES_DIR = Path("data/summaries")
+SUMMARIES_DIR = Path(__file__).parent.parent / "data" / "summaries"
 
 PERIOD_CONFIG = {
     "Daily":   {"yf_period": "5d",  "days_back": 2,  "label": "daily"},
