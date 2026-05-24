@@ -10,7 +10,7 @@ env/
 git_commands.txt
 *.env
 
-# Private portfolio data
+# Private   data
 data/portfolio.json
 data/portfolio_Aakash.json
 data/summaries/

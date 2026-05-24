@@ -659,13 +659,19 @@ elif page == "📋 Summary":
         if not saved:
             st.info("No saved summaries yet.")
         else:
-            sel = st.selectbox("Load a past summary", [s["name"] for s in saved])
-            chosen = next((s for s in saved if s["name"]==sel), None)
-            if chosen:
-                content = open(chosen["path"]).read()
-                st.markdown(content)
-                st.download_button("⬇️ Download as Markdown", data=content,
-                    file_name=chosen["name"]+".md", mime="text/markdown")
+            load_col, btn_col = st.columns([3, 1])
+            with load_col:
+                sel = st.selectbox("Load a past summary", [s["name"] for s in saved])
+            with btn_col:
+                st.write(""); st.write("")
+                load_btn = st.button("Load", key="load_past")
+            if load_btn:
+                chosen = next((s for s in saved if s["name"]==sel), None)
+                if chosen:
+                    content = open(chosen["path"]).read()
+                    st.markdown(content)
+                    st.download_button("⬇️ Download as Markdown", data=content,
+                        file_name=chosen["name"]+".md", mime="text/markdown")
 
 
 

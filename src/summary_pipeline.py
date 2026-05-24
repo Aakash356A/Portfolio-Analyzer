@@ -24,9 +24,9 @@ from .sec_edgar import get_recent_filings
 SUMMARIES_DIR = Path(__file__).parent.parent / "data" / "summaries"
 
 PERIOD_CONFIG = {
-    "Daily":   {"yf_period": "5d",  "days_back": 2,  "label": "daily"},
-    "Weekly":  {"yf_period": "1mo", "days_back": 7,  "label": "weekly"},
-    "Monthly": {"yf_period": "3mo", "days_back": 30, "label": "monthly"},
+    "Daily":   {"yf_period": "2d",  "days_back": 2,  "label": "daily"},
+    "Weekly":  {"yf_period": "5d",  "days_back": 7,  "label": "weekly"},
+    "Monthly": {"yf_period": "1mo", "days_back": 30, "label": "monthly"},
 }
 
 
