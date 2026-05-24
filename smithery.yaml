@@ -1,0 +1,53 @@
+# Smithery configuration — https://smithery.ai
+# Allows one-click install of this MCP server from the Smithery registry.
+
+name: portfolio-analyzer
+displayName: Portfolio Tracker & Analyzer
+description: >
+  Talk to Claude about your stock portfolio using live market data.
+  Pulls real-time prices, technical analysis (RSI, MACD, Bollinger Bands,
+  support/resistance), SEC EDGAR filings, breaking news scored by market
+  impact, fundamentals, and earnings data. Also does side-by-side stock
+  comparisons for any ticker — not just your holdings.
+version: "1.0.0"
+license: MIT
+homepage: https://github.com/aakashdivakar/portfolio-analyzer
+
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties:
+      portfolio_path:
+        type: string
+        description: >
+          Absolute path to your portfolio.json file.
+          Defaults to the data/portfolio.json in the repo directory.
+        default: ""
+    required: []
+  commandFunction: |-
+    (config) => ({
+      command: "python",
+      args: ["mcp_server.py"],
+      env: config.portfolio_path
+        ? { PORTFOLIO_PATH: config.portfolio_path }
+        : {}
+    })
+
+tools:
+  - name: get_portfolio
+    description: All holdings with live prices, P&L, and allocation weights
+  - name: get_portfolio_metrics
+    description: Period return, Sharpe, max drawdown, beta vs S&P 500
+  - name: get_technical_analysis
+    description: RSI, MACD, SMA 20/50/200, Bollinger Bands, support/resistance for any ticker
+  - name: get_fundamentals
+    description: Valuation ratios, EPS beat/miss history, next earnings date
+  - name: get_news
+    description: Latest headlines from Yahoo Finance and Google News
+  - name: get_sec_filings
+    description: Recent 8-K/10-K/10-Q filings from SEC EDGAR
+  - name: get_breaking_news
+    description: All fast sources scored by market impact (1-10 scale)
+  - name: compare_stocks
+    description: Side-by-side comparison of up to 8 stocks
