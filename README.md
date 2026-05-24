@@ -136,7 +136,9 @@ portfolio-analyzer/
 
 ## Adding Holdings
 
-**In the app:** Use the "Manage Holdings" page.
+**In the app:** Use the "Manage Holdings" page. You can manually enter positions or **upload a CSV export** from your broker (e.g., Robinhood, Fidelity, Schwab, Vanguard) to automatically import your holdings.
+
+**If your broker's CSV isn't supported:** You can easily generate the `portfolio.json` file using any AI assistant (like Claude or ChatGPT). Just attach your CSV and ask it to *"Convert my brokerage CSV into this JSON format:"*.
 
 **Or edit directly:** `data/portfolio.json`
 
