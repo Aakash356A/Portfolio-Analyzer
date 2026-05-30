@@ -1,6 +1,7 @@
 """Portfolio Tracker & Analyzer — main Streamlit app.
 Run with:  streamlit run app.py
 """
+import os
 import re as _re
 from datetime import datetime
 from pathlib import Path
@@ -126,7 +127,7 @@ if page == "Dashboard":
 elif page == "Manage Holdings":
     st.header("Manage Holdings")
 
-    tab_buy, tab_sell, tab_import = st.tabs(["🟢 Buy", "🔴 Sell", "📥 Import CSV"])
+    tab_buy, tab_sell, tab_import, tab_plaid = st.tabs(["🟢 Buy", "🔴 Sell", "📥 Import CSV", "🏦 Connect Brokerage"])
 
     with tab_buy:
         st.subheader("Buy Shares")
@@ -469,6 +470,134 @@ elif page == "Manage Holdings":
                                 st.warning("No valid rows found. Check that the file contains tickers, quantities, and cost/price data.")
             except Exception as e:
                 st.error(f"Failed to read file: {e}")
+
+    # ── SnapTrade ─────────────────────────────────────────────────────────────
+    with tab_plaid:
+        st.subheader("🏦 Connect Your Brokerage via SnapTrade")
+        st.caption(
+            "SnapTrade connects to Robinhood, Fidelity, Schwab, Vanguard, E*TRADE, "
+            "Webull, Wealthsimple, and many more. "
+            "Your credentials never touch this app — they go directly to SnapTrade."
+        )
+
+        try:
+            from src import snaptrade_integration as snap
+        except ImportError:
+            snap = None
+            st.error("snaptrade-python-sdk not installed. Run: `pip install snaptrade-python-sdk`")
+
+        if snap is not None:
+            if not snap.is_configured():
+                st.warning("SnapTrade API keys not configured.")
+                with st.expander("📋 Setup instructions (2 minutes, free — real brokerage data)"):
+                    st.markdown("""
+**1. Create a free SnapTrade account**
+Go to [dashboard.snaptrade.com](https://dashboard.snaptrade.com) and sign up, then
+verify your email. The free tier gives you **real brokerage data** for a personal
+account at no cost.
+
+**2. Generate your API key**
+In the dashboard, create an API key. You'll get a **Client ID** and a **Consumer Key**.
+
+**3. Add to your `.env` file**
+```
+SNAPTRADE_CLIENT_ID=your_client_id_here
+SNAPTRADE_CONSUMER_KEY=your_consumer_key_here
+```
+
+**4. Install the SDK**
+```bash
+pip install snaptrade-python-sdk
+```
+
+**5. Restart the app** — this page will activate automatically.
+
+> SnapTrade is purpose-built for investment data, so connecting your broker
+> imports your **actual positions** (shares + cost basis) straight into your
+> portfolio. No test/sandbox toggle needed.
+""")
+            else:
+                try:
+                    connections = snap.list_connections()
+                except Exception as ex:
+                    connections = []
+                    st.error(f"Could not reach SnapTrade: {ex}")
+
+                is_connected = len(connections) > 0
+
+                if is_connected:
+                    names = ", ".join(
+                        c.get("brokerage", {}).get("name", "Broker")
+                        for c in connections
+                    ) or "your brokerage"
+                    st.success(f"✅ Connected: {names}")
+
+                    c1, c2 = st.columns([1, 1])
+                    with c1:
+                        if st.button("🔄 Sync Holdings", type="primary", key="snap_sync"):
+                            with st.spinner("Fetching holdings from SnapTrade…"):
+                                try:
+                                    snap_holdings = snap.fetch_holdings()
+                                    if not snap_holdings:
+                                        st.warning("No positions found in your connected account(s).")
+                                    else:
+                                        if st.session_state.get("snap_clear", False):
+                                            save_portfolio({"holdings": []})
+                                        imported, errors = 0, []
+                                        for h in snap_holdings:
+                                            try:
+                                                add_holding(
+                                                    h["ticker"],
+                                                    h["shares"],
+                                                    h["purchase_price"],
+                                                    h["purchase_date"],
+                                                )
+                                                imported += 1
+                                            except Exception as ex:
+                                                errors.append(f"{h['ticker']}: {ex}")
+                                        if imported:
+                                            st.success(f"✅ Synced {imported} holding(s) from SnapTrade.")
+                                        for err in errors:
+                                            st.error(err)
+                                        st.rerun()
+                                except Exception as ex:
+                                    st.error(f"Sync failed: {ex}")
+
+                    with c2:
+                        st.session_state["snap_clear"] = st.checkbox(
+                            "Replace existing portfolio on sync", value=False, key="snap_clear_cb"
+                        )
+
+                    st.divider()
+                    cc1, cc2 = st.columns([1, 1])
+                    with cc1:
+                        if st.button("➕ Connect Another Broker", key="snap_add"):
+                            try:
+                                snap.open_connection_portal()
+                                st.info("A new browser tab opened. Connect your broker, then click **Check Connection**.")
+                            except Exception as ex:
+                                st.error(f"Could not open portal: {ex}")
+                    with cc2:
+                        if st.button("🔌 Disconnect All", key="snap_disconnect"):
+                            snap.disconnect()
+                            st.success("Disconnected. Your portfolio.json is unchanged.")
+                            st.rerun()
+
+                else:
+                    st.info("No brokerage connected yet.")
+                    if st.button("🏦 Connect Brokerage", type="primary", key="snap_open"):
+                        try:
+                            with st.spinner("Opening SnapTrade connection portal…"):
+                                snap.open_connection_portal()
+                            st.info(
+                                "A new browser tab has opened with the SnapTrade connection page. "
+                                "Log into your brokerage there, then click **Check Connection** below."
+                            )
+                        except Exception as ex:
+                            st.error(f"Could not open connection portal: {ex}")
+
+                    if st.button("✅ Check Connection", key="snap_check"):
+                        st.rerun()
 
     st.divider()
     st.subheader("Current Holdings")

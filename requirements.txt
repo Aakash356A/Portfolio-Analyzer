@@ -8,3 +8,4 @@ openai>=1.0.0
 python-dotenv>=1.0.0
 streamlit-autorefresh>=0.0.1
 mcp>=1.0.0
+snaptrade-python-sdk>=11.0.0

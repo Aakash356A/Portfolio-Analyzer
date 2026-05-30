@@ -40,11 +40,13 @@ app.py                      ← Streamlit frontend (single-page, multi-view)
 ├── src/sec_edgar.py        ← SEC EDGAR API integration
 ├── src/news_monitor.py     ← Real-time multi-source news aggregator
 ├── src/llm.py              ← LLM prompts and OpenRouter client
+├── src/snaptrade_integration.py ← Auto-import holdings from a brokerage (SnapTrade)
 └── src/summary_pipeline.py ← Orchestrates data + LLM for summaries
 
 data/
 ├── portfolio.json          ← Your holdings (gitignored, local only)
 ├── portfolio.example.json  ← Template for others
+├── .snaptrade_user.json    ← SnapTrade user id + secret (gitignored, local only)
 └── summaries/              ← AI-generated markdown memos (gitignored)
 ```
 
@@ -65,7 +67,7 @@ Streamlit's sidebar `radio` widget drives navigation between six pages. All UI s
 | Page | Purpose |
 |------|---------|
 | Dashboard | Live portfolio value, P&L table, allocation pie chart |
-| Manage Holdings | Add / remove positions from portfolio.json |
+| Manage Holdings | Buy/sell positions, import a broker CSV, or auto-connect a brokerage via SnapTrade |
 | Stock Analysis | 4-tab deep dive: Technical, Fundamentals, Geopolitical, News |
 | Performance | Historical portfolio value vs SPY, risk metrics |
 | Summary | AI-generated periodic memo + trading recommendations table |
@@ -94,6 +96,43 @@ Each holding is stored as:
   "purchase_date": "2024-01-15"
 }
 ```
+
+---
+
+### `src/snaptrade_integration.py`
+Auto-imports real brokerage positions via [SnapTrade](https://snaptrade.com), an
+investment-data aggregator (Robinhood, Fidelity, Schwab, Vanguard, E\*TRADE, Webull,
+Wealthsimple, and more). Reads `SNAPTRADE_CLIENT_ID` and `SNAPTRADE_CONSUMER_KEY` from
+the environment.
+
+**Flow (no callback server, no token exchange):**
+1. `get_or_register_user()` — registers a single local SnapTrade user the first time and
+   persists `{userId, userSecret}` to `data/.snaptrade_user.json`. The `userSecret` is
+   generated once by SnapTrade and required for all subsequent calls.
+2. `open_connection_portal()` — calls `login_snap_trade_user` to get a hosted
+   Connection Portal URL (`redirectURI`) and opens it in the browser. The user logs into
+   their brokerage on SnapTrade's side; credentials never touch this app.
+3. `list_connections()` — returns active brokerage authorizations
+   (`connections.list_brokerage_authorizations`), used to detect a successful connection.
+4. `fetch_holdings()` — lists the user's accounts (`list_user_accounts`), reads positions
+   per account (`get_user_account_positions`), and maps them to portfolio format.
+
+| Function | What it does |
+|----------|-------------|
+| `is_configured()` | True if both API keys are present in the environment |
+| `get_or_register_user()` | Returns saved `{userId, userSecret}`, registering on first use |
+| `is_registered()` | True if a local user file exists |
+| `open_connection_portal()` | Opens the SnapTrade Connection Portal in the browser; returns the URL |
+| `list_connections()` | Returns active brokerage connections (empty list if none) |
+| `fetch_holdings()` | Returns positions as `[{ticker, shares, purchase_price, purchase_date}]` |
+| `disconnect()` | Deletes the SnapTrade user (and local secret file), removing all connections |
+
+**Position mapping:** ticker = `position["symbol"]["symbol"]["symbol"]`, shares =
+`units`, `purchase_price` = `average_purchase_price` (falls back to last `price` if cost
+basis is unavailable). Positions for the same ticker across multiple accounts are merged
+with a share-weighted average price. SnapTrade does not expose a per-lot purchase date, so
+`purchase_date` defaults to a placeholder (`"2024-01-01"`); cost-basis-driven P&L remains
+accurate.
 
 ---
 
@@ -338,8 +377,9 @@ Streamlit's `@st.cache_data` is used throughout to avoid hammering APIs on every
 | `data/portfolio.json` | Your actual holdings | Yes — stays local |
 | `data/portfolio.example.json` | Template with example tickers | No — public |
 | `data/summaries/*.md` | AI-generated memos | Yes — stays local |
-| `.env` | API key | Yes |
-| `.env.example` | Template (no real key) | No — public |
+| `data/.snaptrade_user.json` | SnapTrade user id + secret | Yes — stays local |
+| `.env` | API keys | Yes |
+| `.env.example` | Template (no real keys) | No — public |
 
 ---
 
@@ -355,6 +395,7 @@ feedparser>=6.0.0           # RSS feed parsing (news monitor)
 openai>=1.0.0               # OpenAI-compatible client (used for OpenRouter)
 python-dotenv>=1.0.0        # .env file loading
 streamlit-autorefresh>=0.0.1 # Auto-refresh on Monitor page
+snaptrade-python-sdk>=11.0.0 # Brokerage holdings import (SnapTrade)
 ```
 
 No ML frameworks (PyTorch, sklearn, etc.) are used. All quantitative logic is implemented directly with NumPy and Pandas.
@@ -369,8 +410,11 @@ No ML frameworks (PyTorch, sklearn, etc.) are used. All quantitative logic is im
 - Shows: total value, cost basis, total P&L, allocation donut chart, P&L bar chart, full holdings table
 
 ### Manage Holdings
-- Form-validated inputs (ticker verified live via `get_current_price()` before saving)
-- Removes by list index
+Four tabs:
+- **🟢 Buy / 🔴 Sell** — form-validated inputs (ticker verified live via `get_current_price()` before saving); buys recompute a share-weighted average cost, sells reduce or close a position
+- **📥 Import CSV** — upload a broker holdings export (Robinhood, Fidelity, Schwab, Vanguard); common formats are standardized automatically
+- **🏦 Connect Brokerage** — auto-import live positions via SnapTrade (`src/snaptrade_integration.py`): connect once in a hosted portal, then **Sync Holdings** writes positions into `portfolio.json`
+- Removes individual positions by list index
 
 ### Stock Analysis — Technical tab
 - Candlestick chart (daily or weekly) with configurable period

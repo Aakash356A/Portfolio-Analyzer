@@ -131,16 +131,61 @@ portfolio-analyzer/
     ├── news_monitor.py  # Multi-source news fetcher + scorer
     ├── portfolio.py     # Load / save / add / remove holdings
     ├── sec_edgar.py     # SEC EDGAR API client
+    ├── snaptrade_integration.py  # Auto-import holdings from your brokerage
     └── summary_pipeline.py  # Weekly/daily/monthly memo pipeline
 ```
 
 ## Adding Holdings
 
-**In the app:** Use the "Manage Holdings" page. You can manually enter positions or **upload a CSV export** from your broker (e.g., Robinhood, Fidelity, Schwab, Vanguard) to automatically import your holdings.
+There are three ways to get your positions into the tracker. Pick whichever you prefer.
 
-**If your broker's CSV isn't supported:** You can easily generate the `portfolio.json` file using any AI assistant (like Claude or ChatGPT). Just attach your CSV and ask it to *"Convert my brokerage CSV into this JSON format:"*.
+### Option 1 — Auto-connect your brokerage (SnapTrade) ⭐ recommended
 
-**Or edit directly:** `data/portfolio.json`
+Connect your broker once and import your **real positions** (shares + cost basis)
+automatically — no CSVs, no manual typing. Works with Robinhood, Fidelity, Schwab,
+Vanguard, E\*TRADE, Webull, Wealthsimple, and many more.
+
+**1. Create a free SnapTrade account**
+Sign up at [dashboard.snaptrade.com](https://dashboard.snaptrade.com) and verify your
+email. The free tier gives real brokerage data for a personal account at no cost.
+
+**2. Generate an API key** in the dashboard — you'll get a **Client ID** and a
+**Consumer Key**.
+
+**3. Add them to your `.env`:**
+```
+SNAPTRADE_CLIENT_ID=your-snaptrade-client-id
+SNAPTRADE_CONSUMER_KEY=your-snaptrade-consumer-key
+```
+
+**4. Install the SDK** (already included if you ran `pip install -r requirements.txt`):
+```bash
+pip install snaptrade-python-sdk
+```
+
+**5. In the app:** open the **🏦 Connect Brokerage** tab on the Manage Holdings page →
+**Connect Brokerage**. A SnapTrade window opens; log into your broker there. Back in the
+app, click **Check Connection**, then **🔄 Sync Holdings** to import.
+
+> Your broker credentials go directly to SnapTrade and never touch this app.
+> Your SnapTrade user secret is stored locally in `data/.snaptrade_user.json` (gitignored).
+> Note: SnapTrade provides shares + average cost basis, but not the original lot
+> purchase *date*, so imported positions use a placeholder date. Your P&L is accurate.
+
+### Option 2 — Upload a CSV export
+
+On the Manage Holdings page, use the **📥 Import CSV** tab to upload a holdings export
+from your broker (Robinhood, Fidelity, Schwab, Vanguard, etc.). The app standardizes
+common brokerage CSV formats automatically.
+
+**If your broker's CSV isn't supported:** You can easily generate the `portfolio.json`
+file using any AI assistant (like Claude or ChatGPT). Just attach your CSV and ask it to
+*"Convert my brokerage CSV into this JSON format:"*.
+
+### Option 3 — Manual entry / edit the file
+
+Use the **🟢 Buy** / **🔴 Sell** tabs on the Manage Holdings page, or edit
+`data/portfolio.json` directly:
 
 ```json
 {
