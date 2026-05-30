@@ -14,3 +14,9 @@ git_commands.txt
 data/portfolio.json
 data/portfolio_Aakash.json
 data/summaries/
+data/.snaptrade_user.json
+data/.plaid_access_token
+patch_import.py
+patch_import2.py
+patch_inner.py
+test_parse.py
