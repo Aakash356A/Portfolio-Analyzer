@@ -10,6 +10,9 @@ env/
 git_commands.txt
 *.env
 
+# Patch / migration scripts
+patch_*.py
+
 # Private   data
 data/portfolio.json
 data/portfolio_Aakash.json
