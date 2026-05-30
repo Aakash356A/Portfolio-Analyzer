@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: portfolio-analyzer-mcp
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python mcp_server.py
+    envVars:
+      - key: MCP_TRANSPORT
+        value: streamable-http

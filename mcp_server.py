@@ -35,6 +35,7 @@ all using your Claude subscription, zero API cost.
 """
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -71,6 +72,21 @@ from src.news_monitor import fetch_all
 from src.portfolio import load_portfolio
 from src.sec_edgar import get_recent_filings
 
+# ── Portfolio helper ──────────────────────────────────────────────────────────
+
+def _parse_portfolio(portfolio_json: str) -> dict:
+    """
+    Return portfolio dict from an inline JSON string, or fall back to the
+    local data/portfolio.json when running in stdio/local mode.
+    """
+    if portfolio_json.strip():
+        data = json.loads(portfolio_json)
+        if "holdings" not in data:
+            data = {"holdings": data}  # accept bare list too
+        return data
+    return load_portfolio()
+
+
 # ── Server declaration ────────────────────────────────────────────────────────
 
 mcp = FastMCP(
@@ -105,14 +121,19 @@ WORKFLOW GUIDANCE:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
-def get_portfolio() -> str:
+def get_portfolio(portfolio_json: str = "") -> str:
     """
     Return all current portfolio holdings with live prices, P&L (dollar
     and percent), cost basis, market value, and allocation weight.
     Always call this first for a portfolio-level conversation.
+
+    Args:
+        portfolio_json: (remote/hosted use) JSON string of your holdings, e.g.
+            '{"holdings": [{"ticker": "AAPL", "shares": 10, "purchase_price": 150.0, "purchase_date": "2024-01-15"}]}'
+            Omit when running locally — the server reads data/portfolio.json automatically.
     """
     try:
-        holdings = load_portfolio()["holdings"]
+        holdings = _parse_portfolio(portfolio_json)["holdings"]
         if not holdings:
             return json.dumps({"status": "empty", "message": "No holdings in portfolio."})
 
@@ -158,18 +179,20 @@ def get_portfolio() -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
-def get_portfolio_metrics(period: str = "1y") -> str:
+def get_portfolio_metrics(period: str = "1y", portfolio_json: str = "") -> str:
     """
     Return portfolio-level risk and return metrics for the given period.
 
     Args:
-        period: "1mo" | "3mo" | "6mo" | "1y" | "2y" | "5y"
+        period:         "1mo" | "3mo" | "6mo" | "1y" | "2y" | "5y"
+        portfolio_json: (remote/hosted use) JSON string of your holdings — same
+                        format as get_portfolio. Omit when running locally.
 
     Metrics returned: period return, alpha vs S&P 500, annualized
     volatility, Sharpe ratio, max drawdown, beta.
     """
     try:
-        holdings = load_portfolio()["holdings"]
+        holdings = _parse_portfolio(portfolio_json)["holdings"]
         history  = portfolio_history(holdings, period)
         if history.empty or "Total" not in history.columns:
             return json.dumps({"error": "Could not build portfolio history."})
@@ -651,8 +674,15 @@ def compare_stocks(tickers: str, period: str = "6mo") -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Entry point — runs the stdio MCP server
+# Entry point
+#   stdio (default)          — Claude Desktop / local use
+#   MCP_TRANSPORT=streamable-http — hosted deployment (Railway, Render, Fly.io)
 # ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    mcp.run()   # blocks; communicates with Claude Desktop over stdio
+    transport = os.environ.get("MCP_TRANSPORT", "stdio")
+    if transport == "streamable-http":
+        port = int(os.environ.get("PORT", 8000))
+        mcp.run(transport="streamable-http", host="0.0.0.0", port=port)
+    else:
+        mcp.run()   # blocks; communicates with Claude Desktop over stdio

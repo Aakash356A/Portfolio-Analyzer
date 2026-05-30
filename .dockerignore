@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+.env
+*.log
+.DS_Store
+.git/
+.claude/
+
+# Personal portfolio data — never bake into the image
+data/portfolio.json
+data/portfolio_*.json
+data/summaries/
