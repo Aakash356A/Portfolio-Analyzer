@@ -683,6 +683,8 @@ if __name__ == "__main__":
     transport = os.environ.get("MCP_TRANSPORT", "stdio")
     if transport == "streamable-http":
         port = int(os.environ.get("PORT", 8000))
-        mcp.run(transport="streamable-http", host="0.0.0.0", port=port)
+        mcp.settings.host = "0.0.0.0"
+        mcp.settings.port = port
+        mcp.run(transport="streamable-http")
     else:
         mcp.run()   # blocks; communicates with Claude Desktop over stdio
