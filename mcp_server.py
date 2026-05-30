@@ -44,6 +44,7 @@ ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT))
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from src.analytics import (
     annualized_volatility,
@@ -89,8 +90,16 @@ def _parse_portfolio(portfolio_json: str) -> dict:
 
 # ── Server declaration ────────────────────────────────────────────────────────
 
+_transport = os.environ.get("MCP_TRANSPORT", "stdio")
+_security = (
+    TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    if _transport == "streamable-http"
+    else None  # stdio: keep default localhost-only protection
+)
+
 mcp = FastMCP(
     name="Portfolio Tracker",
+    transport_security=_security,
     instructions="""
 You have access to a personal stock portfolio tracker with live market data.
 
