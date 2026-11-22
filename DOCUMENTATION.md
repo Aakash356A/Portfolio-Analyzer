@@ -84,7 +84,7 @@ Handles all reads and writes to `data/portfolio.json`.
 |----------|-------------|
 | `load_portfolio()` | Reads JSON, returns `{"holdings": [...]}` |
 | `save_portfolio(portfolio)` | Writes JSON to disk with indentation |
-| `add_holding(ticker, shares, purchase_price, purchase_date)` | Appends a position and saves |
+| `add_holding(ticker, shares, avg_price, purchase_date)` | Appends a position and saves |
 | `remove_holding(index)` | Pops by list index and saves |
 
 Each holding is stored as:
@@ -92,7 +92,7 @@ Each holding is stored as:
 {
   "ticker": "AAPL",
   "shares": 10.0,
-  "purchase_price": 150.0,
+  "avg_price": 150.0,
   "purchase_date": "2024-01-15"
 }
 ```
@@ -124,11 +124,11 @@ the environment.
 | `is_registered()` | True if a local user file exists |
 | `open_connection_portal()` | Opens the SnapTrade Connection Portal in the browser; returns the URL |
 | `list_connections()` | Returns active brokerage connections (empty list if none) |
-| `fetch_holdings()` | Returns positions as `[{ticker, shares, purchase_price, purchase_date}]` |
+| `fetch_holdings()` | Returns positions as `[{ticker, shares, avg_price, purchase_date}]` |
 | `disconnect()` | Deletes the SnapTrade user (and local secret file), removing all connections |
 
 **Position mapping:** ticker = `position["symbol"]["symbol"]["symbol"]`, shares =
-`units`, `purchase_price` = `average_purchase_price` (falls back to last `price` if cost
+`units`, `avg_price` = `average_purchase_price` (falls back to last `price` if cost
 basis is unavailable). Positions for the same ticker across multiple accounts are merged
 with a share-weighted average price. SnapTrade does not expose a per-lot purchase date, so
 `purchase_date` defaults to a placeholder (`"2024-01-01"`); cost-basis-driven P&L remains
@@ -159,6 +159,9 @@ Integrates with the free [SEC EDGAR REST API](https://www.sec.gov/developer) —
 | `get_cik(ticker)` | Resolves ticker → 10-digit SEC CIK number via `company_tickers.json` |
 | `get_recent_filings(ticker, form_types, days_back, max_results)` | Returns list of recent filings with form, date, description, SEC URL |
 | `get_filing_text(url, max_chars)` | Downloads a filing page, strips HTML, returns plain text for LLM |
+| `get_filing_digest(form, url)` | LLM-ready excerpt: Risk Factors + MD&A for 10-K, MD&A for 10-Q, item text for 8-K (skips table of contents and cross-references) |
+| `get_latest_annual_risk_factors(ticker)` | Item 1A of the most recent 10-K |
+| `get_insider_activity(ticker, days_back)` | Parses Form 4 XML for open-market buys (`P`) and sells (`S`), aggregates by insider, flags 10b5-1 plan sales |
 | `_describe_filing(form, item_codes)` | Maps 8-K item codes to plain-English descriptions |
 
 **Supported form types:** `8-K` (material events), `10-K` (annual report), `10-Q` (quarterly report), `DEF 14A` (proxy/shareholder vote), `4` (insider trades), `SC 13G/13D` (large/activist stakes), `S-1` (IPO).
@@ -207,7 +210,20 @@ Deduplication uses an MD5 hash of the article URL. Results are sorted by score (
 | SEC full-text search (8-K same-day) | SEC EDGAR EFTS | Free | No |
 | News (portfolio news page) | Google News RSS + Yahoo Finance RSS | Free | No |
 | News (monitor page) | SEC EDGAR + Business Wire + PR Newswire + Yahoo + Google | Free | No |
-| AI analysis | OpenRouter → Claude Sonnet 4.6 | Paid per token | Yes (`OPENROUTER_API_KEY`) |
+| AI analysis | OpenRouter → Claude Opus 5.5 | Paid per token | Yes (`OPENROUTER_API_KEY`) |
+
+### `src/market_context.py`
+Extra context for the prompts, all from yfinance (no key).
+
+| Function | What it does |
+|----------|-------------|
+| `position_table(holdings)` | Value, weight, unrealized P&L per holding, plus sector weights |
+| `quality_metrics(info)` | Growth, margins, FCF, cash/debt, P/E, PEG, EV/EBITDA, P/S, analyst consensus + target, short interest, 52w range |
+| `earnings_surprises(earnings_history)` | Last 4 quarters EPS actual vs estimate with surprise % |
+| `relative_performance(ticker, sector, period)` | Return vs sector SPDR ETF (XLK, XLV, …) and SPY |
+| `macro_snapshot()` | 10Y yield, VIX, dollar index, oil, gold — level and 1-month change |
+| `etf_profile(ticker, info)` / `etf_top_holdings(ticker)` | Expense ratio, category, assets, yield; top 10 holdings |
+| `lookthrough_exposure(positions)` | Direct + via-ETF exposure per stock (lower bound — only ETF top holdings are known) |
 
 ---
 
@@ -215,7 +231,7 @@ Deduplication uses an MD5 hash of the article URL. Results are sorted by score (
 
 **File:** `src/llm.py`
 
-**Model:** `anthropic/claude-sonnet-4-6` via [OpenRouter](https://openrouter.ai/)
+**Model:** `$OPENROUTER_MODEL` if set, otherwise `anthropic/claude-opus-5.5`, via [OpenRouter](https://openrouter.ai/)
 
 **Client:** OpenAI SDK pointed at `https://openrouter.ai/api/v1` — OpenRouter's API is OpenAI-compatible, so the standard `openai` Python package works without modification.
 
@@ -228,10 +244,13 @@ Deduplication uses an MD5 hash of the article URL. Results are sorted by score (
 
 | Function | Purpose | Max tokens | Temp |
 |----------|---------|-----------|------|
-| `analyze_fundamentals(ticker, info, earnings_summary, sec_filings, news_headlines)` | Full investment memo: overview, strengths, risks, developments, outlook | 700 | 0.3 |
-| `analyze_geopolitical(ticker, info, news_headlines)` | Geographic/supply-chain exposure, macro risks, geopolitical risks, risk rating | 500 | 0.3 |
-| `summarize_sec_filing(form_type, filing_text, ticker)` | 2–3 sentence plain-English summary of a raw SEC filing; flags bullish/bearish/neutral | 200 | 0.2 |
-| `generate_portfolio_summary(period_label, holdings_data, portfolio_metrics)` | Full portfolio memo + trading recommendations table | 1400 | 0.3 |
+| `analyze_fundamentals(...)` | Stock memo: quality, valuation, earnings & momentum vs peers, insider & filing signals, bull/bear case, what would change the view, rating + confidence | 1800 | 0.3 |
+| `analyze_etf(...)` | Fund memo: what you own, cost, overlap with your other holdings, performance, bull/bear, rating + confidence | 1500 | 0.3 |
+| `analyze_geopolitical(ticker, info, news_headlines, risk_factors, macro)` | Exposure, sensitivity to current macro readings, geopolitical and regulatory risks, the company's own 10-K risk factors, rating + confidence | 1200 | 0.3 |
+| `summarize_sec_filing(form_type, filing_text, ticker, description)` | What happened, why it matters, signal, anything unusual, action needed | 600 | 0.2 |
+| `generate_portfolio_summary(period_label, holdings_data, portfolio_metrics, overview, lookthrough, macro, prior_summary)` | Full portfolio memo + recommendations table | 10000 | 0.3 |
+
+Every prompt includes today's date and uses a shared analyst system prompt that requires citing the data, never inventing figures, and tagging judgment calls with *(inference)*.
 
 All functions call the shared `call_llm(prompt, system, model, max_tokens, temperature)` which handles API errors and configuration errors gracefully, returning error strings instead of raising exceptions.
 
@@ -240,12 +259,14 @@ All functions call the shared `call_llm(prompt, system, model, max_tokens, tempe
 `generate_portfolio_summary` instructs Claude to output a Markdown table with one row per ticker:
 
 ```
-| Ticker | Company | Daily | Weekly | Monthly | Key Reasoning |
+| Ticker | Weight | Daily | Weekly | Monthly | Confidence | Key Reasoning |
 ```
 
 Valid ratings: `Strong Buy / Buy / Moderate Buy / Hold / Moderate Sell / Sell / Strong Sell`
 
-Claude synthesizes: price return, RSI, MACD, Bollinger Band position, SMA trend, recent SEC filings, news headlines, sector macro context, and geopolitical exposure to arrive at each rating.
+Rows are ordered by position weight. The memo also includes Concentration & Exposure, Bull vs Bear for the top 5 positions, Rebalancing Ideas, and — when a previous summary for the same period exists — What Changed Since Last Review.
+
+Claude synthesizes: position size and unrealized P&L, fundamentals, insider activity, performance vs sector ETF and SPY, ETF look-through, macro indicators, price return, RSI, MACD, Bollinger Band position, SMA trend, recent SEC filings, news headlines, sector macro context, and geopolitical exposure to arrive at each rating.
 
 ---
 
@@ -327,8 +348,13 @@ run_summary_pipeline(holdings, period_label)
 │   ├── annualized_volatility(), sharpe_ratio(), max_drawdown()
 │   └── beta_vs_benchmark() vs SPY
 │
-├── For each holding → _stock_snapshot(holding, yf_period, days_back)
-│   ├── get_stock_info()      → sector, country, company name
+├── position_table()  → weights, unrealized P&L, sector weights
+├── macro_snapshot()  → 10Y, VIX, DXY, oil, gold
+│
+├── For each holding (largest first) → _stock_snapshot(holding, yf_period, days_back, position)
+│   ├── get_stock_info()      → sector, country, company name, quality metrics
+│   ├── relative_performance()→ vs sector ETF and SPY
+│   ├── get_insider_activity()→ Form 4 buys/sells (90 days, stocks only)
 │   ├── get_historical_data() → period price return
 │   ├── get_recent_filings()  → up to 4 recent SEC filings
 │   ├── get_company_news_rss()→ up to 8 headlines
@@ -338,8 +364,11 @@ run_summary_pipeline(holdings, period_label)
 │       ├── bollinger_bands() → % position within band
 │       └── sma(20), sma(50)  → above/below trend flags
 │
-└── generate_portfolio_summary() → Claude Sonnet 4.6
-    └── Writes markdown to data/summaries/YYYY-MM-DD_period.md
+├── lookthrough_exposure() → direct + via-ETF exposure
+├── _prior_summary()       → last saved summary for the same period
+│
+└── generate_portfolio_summary() → Claude (OPENROUTER_MODEL)
+    └── Writes markdown to data/summaries/YYYY-MM-DD_period.md (LLM errors are not saved)
 ```
 
 **Period configs:**
@@ -427,7 +456,7 @@ Four tabs:
 
 ### Stock Analysis — Fundamentals & Earnings tab
 - Company snapshot: sector, industry, market cap, employees, P/E TTM, forward P/E, dividend yield, beta
-- AI fundamental memo (on-demand, Claude Sonnet 4.6)
+- AI fundamental memo (on-demand, Claude Opus 5.5)
 - Next earnings date + EPS/revenue estimates
 - EPS actual vs estimate beat/miss chart (last 4 quarters)
 - Quarterly financials: Revenue, Gross Profit, Net Income, Operating Income, EBITDA

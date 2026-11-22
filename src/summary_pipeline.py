@@ -18,8 +18,18 @@ from .analytics import (
 )
 from .data_fetcher import get_company_news_rss, get_earnings_info, get_historical_data, get_stock_info
 from .indicators import bollinger_bands as _bb, macd as _macd, rsi as _rsi, sma as _sma
-from .llm import generate_portfolio_summary
-from .sec_edgar import get_recent_filings
+from .llm import MODEL_LABEL, generate_portfolio_summary
+from .market_context import (
+    is_etf,
+    lookthrough_block,
+    lookthrough_exposure,
+    macro_snapshot,
+    position_line,
+    position_table,
+    quality_metrics,
+    relative_performance,
+)
+from .sec_edgar import get_insider_activity, get_recent_filings
 
 SUMMARIES_DIR = Path(__file__).parent.parent / "data" / "summaries"
 
@@ -87,20 +97,35 @@ def _portfolio_metrics(holdings: list, yf_period: str) -> dict:
     if not spy_data.empty:
         beta = beta_vs_benchmark(returns, calculate_returns(spy_data["Close"]))
 
+    spy_ret = "N/A"
+    if not spy_data.empty and len(spy_data) >= 2:
+        spy_ret = f"{(spy_data['Close'].iloc[-1] / spy_data['Close'].iloc[0] - 1) * 100:+.2f}%"
+
     return {
         "period_return": f"{per_ret:+.2f}%",
+        "spy_return":    spy_ret,
         "volatility":    f"{vol:.2f}%",
-        "sharpe":        f"{sr:.2f}",
+        # Annualizing a handful of daily returns produces meaningless Sharpe values
+        "sharpe":        f"{sr:.2f}" if len(returns) >= 15 else "N/A (window too short)",
         "max_drawdown":  f"{mdd:.2f}%",
         "beta":          f"{beta:.2f}",
     }
 
 
-def _stock_snapshot(holding: dict, yf_period: str, days_back: int) -> dict:
+def _fundamentals_line(info: dict) -> str:
+    """Compact one-liner of the most decision-relevant metrics."""
+    q = quality_metrics(info)
+    keys = ["P/E (forward)", "PEG", "Revenue growth (YoY)", "Operating margin",
+            "Free cash flow (TTM)", "Analyst consensus", "Mean target", "Short % of float"]
+    return " | ".join(f"{k} {q[k]}" for k in keys if q.get(k) not in ("N/A", None)) or "N/A"
+
+
+def _stock_snapshot(holding: dict, yf_period: str, days_back: int, position: dict | None = None) -> dict:
     """Return a dict of per-stock highlights for the summary prompt."""
     ticker  = holding["ticker"]
     info    = get_stock_info(ticker)
     company = info.get("longName", ticker)
+    etf     = is_etf(info)
 
     # Period price return
     price_hist    = get_historical_data(ticker, yf_period)
@@ -126,6 +151,10 @@ def _stock_snapshot(holding: dict, yf_period: str, days_back: int) -> dict:
 
     # Technical signals
     tech = _tech_signals(ticker)
+
+    # Insider activity (Form 4) — always look back at least 90 days for signal
+    insider = "N/A (fund)" if etf else get_insider_activity(
+        ticker, days_back=max(days_back, 90), max_forms=10)["summary"]
 
     # Upcoming earnings
     earnings_date = "Unknown"
@@ -168,7 +197,38 @@ def _stock_snapshot(holding: dict, yf_period: str, days_back: int) -> dict:
         "country":         info.get("country", "US"),
         "earnings_date":   earnings_date,
         "eps_estimate":    eps_estimate,
+        "is_etf":          etf,
+        "position":        position_line(position) if position else "N/A",
+        "relative_perf":   relative_performance(ticker, info.get("sector", ""), yf_period),
+        "fundamentals":    "See ETF profile" if etf else _fundamentals_line(info),
+        "insider":         insider,
     }
+
+
+def _overview_block(pt: dict) -> str:
+    tv, tc = pt["total_value"], pt["total_cost"]
+    if not tv:
+        return ""
+    top = sorted(pt["positions"].items(), key=lambda kv: -kv[1]["value"])[:5]
+    lines = [
+        f"Total value ${tv:,.0f} | cost basis ${tc:,.0f} | unrealized {(tv / tc - 1) * 100 if tc else 0:+.1f}%",
+        f"Positions: {len(pt['positions'])} | top 5 = {sum(p['weight'] for _, p in top):.1f}% of portfolio",
+        "Sector weights: " + ", ".join(f"{s} {w:.1f}%" for s, w in pt["sector_weights"].items()),
+        "Largest: " + ", ".join(f"{t} {p['weight']:.1f}%" for t, p in top),
+        "Note: purchase dates may be placeholders; unrealized P&L uses average cost.",
+    ]
+    return "\n".join(lines)
+
+
+def _prior_summary(period_label: str, today_name: str) -> str:
+    """Most recent saved summary for the same period, excluding today's."""
+    if not SUMMARIES_DIR.exists():
+        return ""
+    files = sorted(SUMMARIES_DIR.glob(f"*_{period_label.lower()}.md"), reverse=True)
+    for f in files:
+        if f.stem != today_name:
+            return f"(Written {f.stem[:10]})\n" + f.read_text()
+    return ""
 
 
 def run_summary_pipeline(
@@ -184,7 +244,7 @@ def run_summary_pipeline(
     yf_period = cfg["yf_period"]
     days_back = cfg["days_back"]
 
-    total = len(holdings) + 2  # portfolio metrics + per-stock + LLM call
+    total = len(holdings) + 4  # metrics + context + per-stock + look-through + LLM call
     step  = [0]
 
     def _tick(msg: str):
@@ -195,22 +255,41 @@ def run_summary_pipeline(
     _tick("Computing portfolio metrics…")
     metrics = _portfolio_metrics(holdings, yf_period)
 
-    holdings_data = []
-    for h in holdings:
-        _tick(f"Gathering data for {h['ticker']}…")
-        holdings_data.append(_stock_snapshot(h, yf_period, days_back))
+    _tick("Loading positions and macro indicators…")
+    pt    = position_table(holdings)
+    macro = macro_snapshot()
 
-    _tick("Calling Claude Sonnet 4.6 via OpenRouter…")
+    # Biggest positions first so the prompt reads in order of importance
+    ordered = sorted(holdings, key=lambda h: -pt["positions"].get(h["ticker"], {}).get("value", 0))
+    holdings_data = []
+    for h in ordered:
+        _tick(f"Gathering data for {h['ticker']}…")
+        holdings_data.append(_stock_snapshot(h, yf_period, days_back, pt["positions"].get(h["ticker"])))
+
+    _tick("Computing ETF look-through exposure…")
+    lookthrough = lookthrough_block(lookthrough_exposure(pt["positions"]))
+
+    date_str  = datetime.today().strftime("%Y-%m-%d")
+    file_stem = f"{date_str}_{period_label.lower()}"
+
+    _tick(f"Calling {MODEL_LABEL} via OpenRouter…")
     summary_text = generate_portfolio_summary(
         period_label=period_label,
         holdings_data=holdings_data,
         portfolio_metrics=metrics,
+        overview=_overview_block(pt),
+        lookthrough=lookthrough,
+        macro=macro,
+        prior_summary=_prior_summary(period_label, file_stem),
     )
+
+    if summary_text.startswith("⚠️"):
+        # Don't save LLM errors — they'd be fed back in as the "previous review"
+        raise RuntimeError(summary_text)
 
     # Persist to disk
     SUMMARIES_DIR.mkdir(parents=True, exist_ok=True)
-    date_str = datetime.today().strftime("%Y-%m-%d")
-    fname    = SUMMARIES_DIR / f"{date_str}_{period_label.lower()}.md"
+    fname = SUMMARIES_DIR / f"{file_stem}.md"
     with open(fname, "w") as fh:
         fh.write(f"# {period_label} Portfolio Summary — {date_str}\n\n")
         fh.write("**Portfolio Metrics:**\n")

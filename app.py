@@ -25,11 +25,18 @@ from src.indicators import (
     rsi, sma, support_resistance_levels,
 )
 from src.llm import (
-    analyze_fundamentals, analyze_geopolitical,
-    is_configured, summarize_sec_filing,
+    analyze_etf, analyze_fundamentals, analyze_geopolitical,
+    is_configured, summarize_sec_filing, MODEL_LABEL,
+)
+from src.market_context import (
+    earnings_surprises, etf_profile, etf_top_holdings, is_etf,
+    lookthrough_exposure, macro_snapshot,
+    position_line, position_table, quality_metrics, relative_performance,
 )
 from src.portfolio import add_holding, load_portfolio, remove_holding, sell_holding, save_portfolio
-from src.sec_edgar import get_filing_text, get_recent_filings
+from src.sec_edgar import (
+    get_filing_digest, get_insider_activity, get_latest_annual_risk_factors, get_recent_filings,
+)
 from src.summary_pipeline import list_saved_summaries, run_summary_pipeline
 from src.news_monitor import fetch_all, score_color, score_bg
 
@@ -41,7 +48,7 @@ st.title("📊 Portfolio Tracker & Analyzer")
 
 llm_ready = is_configured()
 if llm_ready:
-    st.sidebar.success("🤖 Claude Sonnet 4.6 ready")
+    st.sidebar.success(f"🤖 {MODEL_LABEL} ready")
 else:
     st.sidebar.warning("🔑 OpenRouter key not set — AI features disabled")
     with st.sidebar.expander("How to add key"):
@@ -115,7 +122,7 @@ if page == "Dashboard":
 
             st.subheader("Holdings")
             disp = df.copy()
-            for c in ["Purchase Price","Current Price","Cost Basis","Market Value","P&L ($)"]:
+            for c in ["Average Price","Current Price","Cost Basis","Market Value","P&L ($)"]:
                 disp[c] = disp[c].apply(fmt)
             disp["P&L (%)"] = disp["P&L (%)"].apply(lambda x: f"{x:+.2f}%")
             st.dataframe(disp, use_container_width=True, hide_index=True)
@@ -138,7 +145,7 @@ elif page == "Manage Holdings":
                 ticker = st.text_input("Ticker", placeholder="AAPL")
                 shares = st.number_input("Shares", min_value=0., step=0.01, format="%.4f")
             with c2:
-                pp    = st.number_input("Purchase Price ($)", min_value=0., step=0.01, format="%.2f")
+                pp    = st.number_input("Average Price ($)", min_value=0., step=0.01, format="%.2f")
                 pdate = st.date_input("Purchase Date", value=datetime.today())
             if st.form_submit_button("Buy"):
                 if not ticker or shares <= 0 or pp <= 0:
@@ -155,7 +162,7 @@ elif page == "Manage Holdings":
                                            if h["ticker"] == ticker.upper().strip())
                             st.success(
                                 f"Added {shares} shares of {ticker.upper()}. "
-                                f"New position: {updated['shares']} shares @ avg {fmt(updated['purchase_price'])}"
+                                f"New position: {updated['shares']} shares @ avg {fmt(updated['avg_price'])}"
                             )
                         else:
                             st.success(f"Opened new position: {shares} shares of {ticker.upper()} (current: {fmt(price)})")
@@ -170,7 +177,7 @@ elif page == "Manage Holdings":
                 sell_ticker = st.selectbox("Ticker", [h["ticker"] for h in holdings])
                 held = next((h for h in holdings if h["ticker"] == sell_ticker), None)
                 if held:
-                    st.caption(f"Currently holding **{held['shares']} shares** @ avg cost {fmt(held['purchase_price'])}")
+                    st.caption(f"Currently holding **{held['shares']} shares** @ avg cost {fmt(held['avg_price'])}")
                 sell_shares = st.number_input("Shares to sell", min_value=0., step=0.01, format="%.4f")
                 if st.form_submit_button("Sell"):
                     if sell_shares <= 0:
@@ -549,7 +556,7 @@ pip install snaptrade-python-sdk
                                                 add_holding(
                                                     h["ticker"],
                                                     h["shares"],
-                                                    h["purchase_price"],
+                                                    h["avg_price"],
                                                     h["purchase_date"],
                                                 )
                                                 imported += 1
@@ -608,7 +615,7 @@ pip install snaptrade-python-sdk
             c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 2, 1])
             c1.markdown(f"**{h['ticker']}**")
             c2.write(f"{h['shares']} shares")
-            c3.write(f"@ avg {fmt(h['purchase_price'])}")
+            c3.write(f"@ avg {fmt(h['avg_price'])}")
             c4.write(h.get("purchase_date", ""))
             if c5.button("Remove", key=f"del_{i}"):
                 remove_holding(i); st.rerun()
@@ -800,20 +807,40 @@ elif page == "Stock Analysis":
             st.divider()
             st.subheader("AI Fundamental Analysis")
             if llm_btn("Generate Fundamental Memo", "fund_ai"):
-                news  = get_company_news_rss(ticker, company, max_articles=8)
-                heads = [a["title"] for a in news]
-                eh    = earnings.get("earnings_history")
-                earn_str = "No earnings history."
-                if eh is not None and not eh.empty:
-                    cm = {c.lower():c for c in eh.columns}
-                    ac = next((cm[k] for k in cm if "actual"   in k), None)
-                    ec = next((cm[k] for k in cm if "estimate" in k), None)
-                    if ac and ec:
-                        earn_str = eh[[ac,ec]].tail(4).to_string(index=False)
-                with st.spinner("Claude Sonnet 4.6 is analyzing…"):
-                    memo = analyze_fundamentals(ticker,info,earn_str,filings,heads)
+                with st.spinner("Gathering filings, insider trades, peers and macro data…"):
+                    news  = get_company_news_rss(ticker, company, max_articles=10)
+                    heads = [a["title"] for a in news]
+                    pt    = position_table(holdings) if any(h["ticker"]==ticker for h in holdings) else None
+                    pos   = position_line(pt["positions"][ticker]) if pt and ticker in pt["positions"] else ""
+                    macro = macro_snapshot()
+                    rel   = (f"1 month: {relative_performance(ticker, info.get('sector',''), '1mo')}\n"
+                             f"6 months: {relative_performance(ticker, info.get('sector',''), '6mo')}\n"
+                             f"1 year: {relative_performance(ticker, info.get('sector',''), '1y')}")
+                    if is_etf(info):
+                        overlap = ""
+                        if pt:
+                            rows = [r for r in lookthrough_exposure(pt["positions"], top_n=40)
+                                    if ticker in r[4] and r[2] > 0]
+                            overlap = "\n".join(
+                                f"{sym}: held directly at {d:.1f}%, plus {v:.1f}% via funds ({', '.join(src)})"
+                                for sym, _, d, v, src in rows) or "No overlap with directly held stocks."
+                    else:
+                        latest = next((f for f in filings if f["form"] in ("10-Q","10-K")), None)
+                        digest = get_filing_digest(latest["form"], latest["url"], max_chars=8000) if latest else ""
+                        insider = get_insider_activity(ticker, days_back=180)
+                if is_etf(info):
+                    with st.spinner(f"{MODEL_LABEL} is analyzing the fund…"):
+                        memo = analyze_etf(ticker, info, etf_profile(ticker, info), etf_top_holdings(ticker),
+                                           relative_perf=rel, overlap=overlap, position=pos,
+                                           news_headlines=heads, macro=macro)
+                else:
+                    with st.spinner(f"{MODEL_LABEL} is analyzing…"):
+                        memo = analyze_fundamentals(
+                            ticker, info, earnings_surprises(earnings.get("earnings_history")),
+                            filings, heads, quality=quality_metrics(info), relative_perf=rel,
+                            insider=insider, filing_digest=digest, position=pos, macro=macro)
                 st.markdown(memo)
-                st.caption("Generated by Claude Sonnet 4.6 via OpenRouter")
+                st.caption(f"Generated by {MODEL_LABEL} via OpenRouter")
 
             st.divider()
             st.subheader("Next Earnings")
@@ -909,11 +936,11 @@ elif page == "Stock Analysis":
                                      disabled=not llm_ready,
                                      help="AI summary" if llm_ready else "Needs API key"):
                             with st.spinner("Fetching filing…"):
-                                text = get_filing_text(f["url"])
-                            with st.spinner("Claude is reading…"):
-                                summ = summarize_sec_filing(f["form"],text,ticker)
+                                text = get_filing_digest(f["form"], f["url"])
+                            with st.spinner(f"{MODEL_LABEL} is reading…"):
+                                summ = summarize_sec_filing(f["form"],text,ticker,f["description"])
                             st.markdown(summ)
-                            st.caption("Generated by Claude Sonnet 4.6 via OpenRouter")
+                            st.caption(f"Generated by {MODEL_LABEL} via OpenRouter")
 
         # ══ Geopolitical & Macro ══════════════════════════════════════════
         with tab_geo:
@@ -927,12 +954,15 @@ elif page == "Stock Analysis":
                 st.write(info.get("longBusinessSummary","Not available."))
             st.divider()
             if llm_btn("Run Geopolitical Risk Assessment", "geo_ai"):
-                news  = get_company_news_rss(ticker, company, max_articles=10)
-                heads = [a["title"] for a in news]
-                with st.spinner("Claude Sonnet 4.6 is assessing risks…"):
-                    geo = analyze_geopolitical(ticker, info, heads)
+                with st.spinner("Reading the latest 10-K risk factors and macro data…"):
+                    news  = get_company_news_rss(ticker, company, max_articles=12)
+                    heads = [a["title"] for a in news]
+                    rf    = "" if is_etf(info) else get_latest_annual_risk_factors(ticker)
+                    macro = macro_snapshot()
+                with st.spinner(f"{MODEL_LABEL} is assessing risks…"):
+                    geo = analyze_geopolitical(ticker, info, heads, risk_factors=rf, macro=macro)
                 st.markdown(geo)
-                st.caption("Generated by Claude Sonnet 4.6 via OpenRouter")
+                st.caption(f"Generated by {MODEL_LABEL} via OpenRouter")
             st.divider()
             st.subheader("Useful Macro References")
             st.info(
@@ -1034,7 +1064,7 @@ elif page == "Performance":
 elif page == "📋 Summary":
     st.header("Portfolio Summary")
     st.caption(
-        "Claude Sonnet 4.6 reads your holdings, SEC filings, and news "
+        f"{MODEL_LABEL} reads your holdings, SEC filings, and news "
         "for the selected period and writes a personal investment memo."
     )
 
@@ -1062,7 +1092,7 @@ elif page == "📋 Summary":
                 st.success("Summary saved to data/summaries/")
                 st.divider()
                 st.markdown(summary_text)
-                st.caption("Generated by Claude Sonnet 4.6 via OpenRouter")
+                st.caption(f"Generated by {MODEL_LABEL} via OpenRouter")
             except Exception as e:
                 bar.empty(); stat.empty()
                 st.error(f"Failed: {e}")
@@ -1301,6 +1331,6 @@ st.sidebar.markdown("---")
 st.sidebar.caption(
     "Data: Yahoo Finance · ~15 min delay\n"
     "SEC: EDGAR API (free)\n"
-    "AI: Claude Sonnet 4.6 via OpenRouter\n"
+    f"AI: {MODEL_LABEL} via OpenRouter\n"
     "Personal use only — not investment advice."
 )

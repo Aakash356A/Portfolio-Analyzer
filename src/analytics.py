@@ -12,14 +12,14 @@ def calculate_portfolio_metrics(holdings: list) -> pd.DataFrame:
         current = get_current_price(h["ticker"])
         if current is None:
             continue
-        cost = h["shares"] * h["purchase_price"]
+        cost = h["shares"] * h["avg_price"]
         market_value = h["shares"] * current
         pnl = market_value - cost
         pnl_pct = (pnl / cost * 100) if cost > 0 else 0.0
         rows.append({
             "Ticker": h["ticker"],
             "Shares": h["shares"],
-            "Purchase Price": h["purchase_price"],
+            "Average Price": h["avg_price"],
             "Current Price": current,
             "Cost Basis": cost,
             "Market Value": market_value,

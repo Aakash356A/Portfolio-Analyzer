@@ -178,7 +178,7 @@ def fetch_holdings() -> list[dict]:
     """
     Fetch positions across all connected accounts and return them in
     portfolio.json format:
-        [{"ticker": "AAPL", "shares": 10, "purchase_price": 150.0,
+        [{"ticker": "AAPL", "shares": 10, "avg_price": 150.0,
           "purchase_date": "2024-01-15"}]
 
     Positions for the same ticker across multiple accounts are merged with a
@@ -239,7 +239,7 @@ def fetch_holdings() -> list[dict]:
         holdings.append({
             "ticker":         ticker,
             "shares":         shares,
-            "purchase_price": avg_price,
+            "avg_price":        avg_price,
             "purchase_date":  "2024-01-01",  # SnapTrade positions don't expose a lot date
         })
 

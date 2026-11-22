@@ -136,7 +136,7 @@ def get_portfolio() -> str:
                 {
                     "ticker":         row["Ticker"],
                     "shares":         row["Shares"],
-                    "purchase_price": round(row["Purchase Price"], 2),
+                    "avg_price": round(row["Average Price"], 2),
                     "current_price":  round(row["Current Price"], 2),
                     "cost_basis":     round(row["Cost Basis"], 2),
                     "market_value":   round(row["Market Value"], 2),

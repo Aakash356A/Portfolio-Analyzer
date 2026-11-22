@@ -141,6 +141,178 @@ def get_filing_text(url: str, max_chars: int = 3000) -> str:
         return ""
 
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def _filing_plain_text(url: str) -> str:
+    """Full filing as plain text (no length cap)."""
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=30)
+        resp.raise_for_status()
+        text = re.sub(r"<[^>]+>", " ", resp.text)
+        text = re.sub(r"&nbsp;|&#160;|&#xa0;", " ", text, flags=re.I)
+        text = re.sub(r"&amp;", "&", text)
+        text = re.sub(r"&#8217;|&rsquo;", "'", text)
+        text = re.sub(r"&#\d+;|&[a-z]+;", " ", text)
+        return re.sub(r"\s+", " ", text).strip()
+    except Exception:
+        return ""
+
+
+_XREF = re.compile(r"(refer to|see|in|under|with|within|described in|part i,?)\s*[\"“']?\s*$", re.I)
+
+
+def _extract_section(text: str, start_pat: str, end_pat: str, max_chars: int) -> str:
+    """
+    Pull one 'Item X' section out of a 10-K/10-Q. The heading also appears in
+    the table of contents, so take the start match with the longest span to
+    its next end match — that is the real section body.
+    """
+    # Drop cross-references like "Refer to Item 1A. Risk Factors"
+    starts = [m.start() for m in re.finditer(start_pat, text, flags=re.I)
+              if not _XREF.search(text[max(0, m.start() - 40):m.start()])]
+    ends   = [m.start() for m in re.finditer(end_pat,   text, flags=re.I)]
+    best = ""
+    for s in starts:
+        e = next((e for e in ends if e > s + 20), None)
+        chunk = text[s:e] if e else text[s:s + max_chars]
+        if len(chunk) > len(best):
+            best = chunk
+    return best[:max_chars]
+
+
+# Section patterns per form: (label, start, end)
+_SECTIONS = {
+    "10-K": [
+        ("Risk Factors", r"item\s*1a\.?\s*[-–—:]?\s*risk\s+factors", r"item\s*1b\.?|item\s*1c\.?|item\s*2\.?\s*[-–—:]?\s*properties"),
+        ("MD&A",         r"item\s*7\.?\s*[-–—:]?\s*management.s\s+discussion", r"item\s*7a\.?|item\s*8\.?\s*[-–—:]?\s*financial"),
+    ],
+    "10-Q": [
+        ("MD&A",         r"item\s*2\.?\s*[-–—:]?\s*management.s\s+discussion", r"item\s*3\.?\s*[-–—:]?\s*quantitative|item\s*4\.?\s*[-–—:]?\s*controls"),
+    ],
+}
+
+
+def get_filing_digest(form: str, url: str, max_chars: int = 12000) -> str:
+    """
+    The parts of a filing worth an LLM's attention:
+      10-K / 10-Q → Risk Factors + MD&A sections
+      everything else (8-K, proxy, …) → body text after the cover page
+    """
+    text = _filing_plain_text(url)
+    if not text:
+        return ""
+    sections = _SECTIONS.get(form.replace("/A", ""))
+    if sections:
+        per = max_chars // len(sections)
+        parts = []
+        for label, sp, ep in sections:
+            body = _extract_section(text, sp, ep, per)
+            if len(body) > 500:
+                parts.append(f"[{label}]\n{body}")
+        if parts:
+            return "\n\n".join(parts)
+    # 8-K etc.: skip the boilerplate cover page when possible
+    m = re.search(r"item\s*\d\.\d\d", text, flags=re.I)
+    start = m.start() if m else 0
+    return text[start:start + max_chars]
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_latest_annual_risk_factors(ticker: str, max_chars: int = 6000) -> str:
+    """Risk Factors section of the most recent 10-K (last ~13 months)."""
+    filings = get_recent_filings(ticker, form_types=["10-K"], days_back=400, max_results=1)
+    if not filings:
+        return ""
+    text = _filing_plain_text(filings[0]["url"])
+    start, end = _SECTIONS["10-K"][0][1:]
+    return _extract_section(text, start, end, max_chars)
+
+
+def _form4_xml_url(url: str) -> str:
+    """Form 4 primaryDocument points at the XSL-rendered view; strip it for raw XML."""
+    return re.sub(r"/xslF345X\d+/", "/", url)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _parse_form4(url: str) -> list:
+    """Open-market transactions in one Form 4: [{name, title, code, shares, price, date}]."""
+    import xml.etree.ElementTree as ET
+    try:
+        resp = requests.get(_form4_xml_url(url), headers=HEADERS, timeout=TIMEOUT)
+        resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+    except Exception:
+        return []
+
+    def _t(node, path):
+        el = node.find(path)
+        return (el.text or "").strip() if el is not None and el.text else ""
+
+    owner = root.find("reportingOwner")
+    name  = _t(owner, "reportingOwnerId/rptOwnerName") if owner is not None else ""
+    rel   = owner.find("reportingOwnerRelationship") if owner is not None else None
+    title = ""
+    if rel is not None:
+        title = _t(rel, "officerTitle") or (
+            "Director" if _t(rel, "isDirector") in ("1", "true") else
+            "10% owner" if _t(rel, "isTenPercentOwner") in ("1", "true") else "")
+
+    out = []
+    for tx in root.findall("nonDerivativeTable/nonDerivativeTransaction"):
+        code = _t(tx, "transactionCoding/transactionCode")
+        if code not in ("P", "S"):  # P = open-market buy, S = open-market sale
+            continue
+        try:
+            shares = float(_t(tx, "transactionAmounts/transactionShares/value") or 0)
+            price  = float(_t(tx, "transactionAmounts/transactionPricePerShare/value") or 0)
+        except ValueError:
+            continue
+        out.append({
+            "name": name, "title": title, "code": code,
+            "shares": shares, "price": price,
+            "date": _t(tx, "transactionDate/value"),
+            "planned": "10b5-1" in resp.text,
+        })
+    return out
+
+
+def get_insider_activity(ticker: str, days_back: int = 90, max_forms: int = 20) -> dict:
+    """
+    Summarize open-market insider buys/sells from Form 4 filings.
+    Returns {"buys_usd", "sells_usd", "n_buys", "n_sells", "lines": [...], "summary": str}.
+    """
+    forms = get_recent_filings(ticker, form_types=["4"], days_back=days_back, max_results=max_forms)
+    txs = []
+    for f in forms:
+        txs.extend(_parse_form4(f["url"]))
+
+    buys  = [t for t in txs if t["code"] == "P"]
+    sells = [t for t in txs if t["code"] == "S"]
+    buys_usd  = sum(t["shares"] * t["price"] for t in buys)
+    sells_usd = sum(t["shares"] * t["price"] for t in sells)
+
+    # Aggregate per insider for readable lines
+    agg: dict = {}
+    for t in txs:
+        k = (t["name"], t["title"], t["code"])
+        a = agg.setdefault(k, {"usd": 0.0, "shares": 0.0, "planned": False})
+        a["usd"] += t["shares"] * t["price"]
+        a["shares"] += t["shares"]
+        a["planned"] = a["planned"] or t["planned"]
+    lines = [
+        f"{'BUY' if code == 'P' else 'SELL'} {name}{f' ({title})' if title else ''}: "
+        f"{a['shares']:,.0f} sh ≈ ${a['usd']:,.0f}{' [10b5-1 plan]' if a['planned'] else ''}"
+        for (name, title, code), a in sorted(agg.items(), key=lambda kv: -kv[1]["usd"])
+    ][:6]
+
+    if not txs:
+        summary = f"No open-market insider buys or sells in the last {days_back} days."
+    else:
+        summary = (f"Last {days_back}d: {len(buys)} open-market buys (${buys_usd:,.0f}), "
+                   f"{len(sells)} sells (${sells_usd:,.0f}).")
+    return {"buys_usd": buys_usd, "sells_usd": sells_usd, "n_buys": len(buys),
+            "n_sells": len(sells), "lines": lines, "summary": summary}
+
+
 def _describe_filing(form: str, item_codes: str) -> str:
     """Human-readable description based on form type + 8-K item codes."""
     if form != "8-K" or not item_codes:

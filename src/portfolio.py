@@ -20,19 +20,19 @@ def save_portfolio(portfolio):
         json.dump(portfolio, f, indent=2)
 
 
-def add_holding(ticker, shares, purchase_price, purchase_date):
+def add_holding(ticker, shares, avg_price, purchase_date):
     """Buy shares. If ticker already exists, recalculate weighted average price."""
     portfolio = load_portfolio()
     ticker = ticker.upper().strip()
     shares = float(shares)
-    purchase_price = float(purchase_price)
+    avg_price = float(avg_price)
 
     for h in portfolio["holdings"]:
         if h["ticker"] == ticker:
-            old_cost = h["shares"] * h["purchase_price"]
-            new_cost = shares * purchase_price
+            old_cost = h["shares"] * h["avg_price"]
+            new_cost = shares * avg_price
             h["shares"] = round(h["shares"] + shares, 6)
-            h["purchase_price"] = round((old_cost + new_cost) / h["shares"], 4)
+            h["avg_price"] = round((old_cost + new_cost) / h["shares"], 4)
             save_portfolio(portfolio)
             return
 
@@ -40,7 +40,7 @@ def add_holding(ticker, shares, purchase_price, purchase_date):
     portfolio["holdings"].append({
         "ticker": ticker,
         "shares": shares,
-        "purchase_price": purchase_price,
+        "avg_price": avg_price,
         "purchase_date": str(purchase_date),
     })
     save_portfolio(portfolio)

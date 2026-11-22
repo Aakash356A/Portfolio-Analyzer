@@ -102,11 +102,11 @@ Open http://localhost:8501 in your browser.
 
 **Manage Holdings** — Add/remove positions with ticker validation
 
-**Stock Analysis** — Candlestick chart with SMA/EMA/Bollinger overlays, RSI, MACD, volume, fundamentals, and an AI memo (Claude Sonnet 4.6)
+**Stock Analysis** — Candlestick chart with SMA/EMA/Bollinger overlays, RSI, MACD, volume, fundamentals, and an AI memo (Claude Opus 5.5) that reads valuation/quality metrics, EPS surprises, performance vs its sector ETF, insider trades (Form 4), the latest 10-K/10-Q MD&A and Risk Factors, and macro indicators. ETFs get a fund memo covering cost and overlap with your other holdings
 
 **Performance** — Portfolio vs S&P 500 (normalized), volatility, Sharpe, drawdown, beta, returns distribution
 
-**Summary** — Claude Sonnet 4.6 writes a personal investment memo (daily / weekly / monthly) covering winners/losers, SEC events, macro themes, and recommendations
+**Summary** — Claude Opus 5.5 writes a personal investment memo (daily / weekly / monthly) that knows your position sizes and cost basis, your true exposure through ETFs, and what it said last time — covering winners/losers, concentration, bull vs bear cases, SEC and insider events, macro, rebalancing ideas, and recommendations with confidence levels
 
 **Monitor** — Real-time news alerts from SEC EDGAR, Business Wire, PR Newswire, Yahoo, and Google News — scored by market impact
 
@@ -127,7 +127,8 @@ portfolio-analyzer/
     ├── analytics.py     # Portfolio metrics & risk
     ├── data_fetcher.py  # yfinance wrapper with caching
     ├── indicators.py    # SMA, EMA, RSI, MACD, Bollinger
-    ├── llm.py           # Claude Sonnet 4.6 via OpenRouter
+    ├── llm.py           # Prompts + OpenRouter client (default Claude Opus 5.5)
+    ├── market_context.py # Positions, valuation, peers, macro, ETF look-through
     ├── news_monitor.py  # Multi-source news fetcher + scorer
     ├── portfolio.py     # Load / save / add / remove holdings
     ├── sec_edgar.py     # SEC EDGAR API client
@@ -193,7 +194,7 @@ Use the **🟢 Buy** / **🔴 Sell** tabs on the Manage Holdings page, or edit
     {
       "ticker": "AAPL",
       "shares": 10,
-      "purchase_price": 150.0,
+      "avg_price": 150.0,
       "purchase_date": "2024-01-15"
     }
   ]
