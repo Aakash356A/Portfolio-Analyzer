@@ -20,3 +20,5 @@ patch_import.py
 patch_import2.py
 patch_inner.py
 test_parse.py
+# Claude Code local config and worktrees
+.claude/
